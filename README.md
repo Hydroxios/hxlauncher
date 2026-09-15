@@ -1,118 +1,118 @@
 # HX Launcher
 
-Launcher **Minecraft Java Edition** avec **Tauri 2**, **React / TypeScript** et un backend **Rust**. Interface en français, instances isolées et installation par import CurseForge.
+**Minecraft Java Edition** launcher built with **Tauri 2**, **React / TypeScript**, and a **Rust** backend. The interface is French, with isolated instances and CurseForge ZIP import installation.
 
-## Démarrer
+## Getting started
 
-Prérequis : Node.js 22.12+ (ou 24+), Rust stable récent, [prérequis Tauri](https://v2.tauri.app/start/prerequisites/) et Java pour lancer Minecraft.
+Requirements: Node.js 22.12+ (or 24+), a recent stable Rust toolchain, [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/), and Java to run Minecraft.
 
 ```sh
 npm install
 npm run tauri dev
 ```
 
-Le serveur Vite utilise `127.0.0.1:15420`. `npm run dev` affiche seulement l’interface dans un navigateur : les commandes natives nécessitent Tauri.
+The Vite server uses `127.0.0.1:15420`. `npm run dev` only displays the interface in a browser; native commands require Tauri.
 
 ```sh
 npm run build                          # TypeScript + frontend
 cargo test --manifest-path src-tauri/Cargo.toml
-npm run tauri build                    # Bundle de production pour la machine actuelle
-npm run tauri build -- --debug --bundles app  # .app macOS de développement
+npm run tauri build                    # Production bundle for the current machine
+npm run tauri build -- --debug --bundles app  # Development macOS .app
 ```
 
-## Ce qui est implémenté
+## Implemented features
 
-- Connexion Microsoft par code dans le navigateur système.
-- **`oauth2` 5** gère le device flow, l’attente avec backoff, l’expiration et le renouvellement Microsoft.
-- **`minecraft-msa-auth` 0.5** gère les échanges Microsoft → Xbox Live → Minecraft Services.
-- Lecture du profil Minecraft Java ; le frontend ne reçoit aucun access token ni refresh token.
-- Refresh token dans le trousseau système via `keyring` ; renouvellement au démarrage et avant chaque lancement, déconnexion et annulation de connexion.
-- Liste des versions stables Mojang à partir de Minecraft 1.19 ; création d’instances et réglage Java/RAM.
-- Téléchargement du client, des bibliothèques et des assets depuis les manifestes Mojang, contrôle SHA-1, cache partagé et 12 téléchargements d’assets simultanés.
-- Construction des arguments JVM/jeu, règles de plateforme, lancement Java et suivi du processus. Les anciens formats de natives incompatibles avec ARM sont refusés explicitement.
-- Lecture d’un **ZIP CurseForge local** : manifeste v1, version Minecraft, modloader primaire, références `projectID` / `fileID`, nombre d’overrides. Rejet des chemins sortants, des liens symboliques et des archives démesurées.
+- Microsoft sign-in through a code displayed in the system browser.
+- **`oauth2` 5** handles the device flow, backoff polling, expiration, and Microsoft token refresh.
+- **`minecraft-msa-auth` 0.5** handles Microsoft → Xbox Live → Minecraft Services exchanges.
+- Minecraft Java profile loading; no access or refresh token is sent to the frontend.
+- Refresh tokens are stored in the system keychain with `keyring`; refresh on startup and before each launch, logout, and login cancellation are supported.
+- Mojang stable versions from Minecraft 1.19 onward; instance creation and Java/RAM settings.
+- Client, library, and asset downloads from Mojang manifests, SHA-1 verification, shared cache, and 12 concurrent asset downloads.
+- JVM/game argument construction, platform rules, Java launch, and process tracking. Legacy native formats incompatible with ARM are rejected explicitly.
+- Local **CurseForge ZIP** inspection: manifest v1, Minecraft version, primary modloader, `projectID` / `fileID` references, and override count. Path traversal, symbolic links, and oversized archives are rejected.
 
-## Configurer Microsoft
+## Microsoft setup
 
-La bibliothèque d’authentification n’élimine pas la nécessité d’identifier ton application auprès de Microsoft.
+The authentication library does not remove the need to register your application with Microsoft.
 
-1. Dans **Microsoft Entra → Inscriptions d’applications**, crée une application acceptant les **comptes Microsoft personnels**.
-2. Dans **Authentification → Paramètres avancés**, active **Autoriser les flux clients publics**. Aucun secret client ni URL de redirection n’est nécessaire pour le device flow.
-3. Renseigne `MICROSOFT_CLIENT_ID` dans `.env` à la racine, puis recompile le launcher.
-4. Clique sur **Se connecter avec Microsoft**, ouvre Microsoft et saisis le code.
-5. Le compte doit avoir accès à Minecraft Java et avoir créé son profil de joueur.
+1. In **Microsoft Entra → App registrations**, create an application that accepts **personal Microsoft accounts**.
+2. In **Authentication → Advanced settings**, enable **Allow public client flows**. Device flow requires no client secret or redirect URL.
+3. Set `MICROSOFT_CLIENT_ID` in the root `.env` file, then rebuild the launcher.
+4. Click **Sign in with Microsoft**, open Microsoft, and enter the code.
+5. The account must own Minecraft Java and have created a player profile.
 
-L’accès à Minecraft Services pour une nouvelle application peut nécessiter l’autorisation de Mojang. Un refus à cette étape n’est pas résolu en changeant de bibliothèque ou en empruntant le Client ID d’un autre launcher. La connexion complète doit être validée avec ton application et ton compte avant distribution.
+Access to Minecraft Services for a new application may require Mojang approval. A rejection at this stage cannot be fixed by changing libraries or borrowing another launcher's Client ID. Validate the complete sign-in flow with your own application and account before distribution.
 
-En cas de refus, HX distingue désormais Xbox Live, Xbox XSTS et Minecraft Services. Un HTTP 403 seul ne prouve pas un problème d’inscription. Si Minecraft renvoie `Invalid app registration`, utilise le [formulaire officiel AppID Review](https://aka.ms/mce-reviewappid) : il demande le Client ID, le Tenant ID, un contact, une page présentant l’application et une justification de l’accès aux API. Le formulaire indique un examen hebdomadaire, sans garantie de délai d’approbation. Les réponses et jetons d’authentification ne sont pas exposés dans le diagnostic.
+When sign-in is rejected, HX distinguishes Xbox Live, Xbox XSTS, and Minecraft Services. An HTTP 403 alone does not prove an app registration issue. If Minecraft returns `Invalid app registration`, use the [official AppID Review form](https://aka.ms/mce-reviewappid). It asks for the Client ID, Tenant ID, a contact, an application page, and a justification for API access. The form mentions a weekly review with no guaranteed approval time. Authentication responses and tokens are excluded from diagnostics.
 
-Sources : [device flow Microsoft](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code), [oauth2-rs](https://github.com/ramosbugs/oauth2-rs), [minecraft-msa-auth](https://github.com/minecraft-rs/minecraft-msa-auth).
+Sources: [Microsoft device flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code), [oauth2-rs](https://github.com/ramosbugs/oauth2-rs), [minecraft-msa-auth](https://github.com/minecraft-rs/minecraft-msa-auth).
 
 ## Java
 
-Java n’est pas encore installé automatiquement. Renseigne `java` ou le chemin absolu de ton exécutable dans les paramètres, puis **Vérifier**. Le backend compare la version de Java au minimum demandé par le manifeste Minecraft avant tout téléchargement du jeu. Utilise un Java adapté à l’architecture de ton ordinateur.
+Java is not installed automatically yet. Set `java` or the absolute path to your executable in the settings, then click **Verify**. Before downloading the game, the backend compares your Java version with the minimum required by the Minecraft manifest. Use a Java runtime built for your computer's architecture.
 
-Exemples : Java 17 pour Minecraft 1.20.1 ; Java 21 pour 1.20.5 / 1.21. Les versions ultérieures suivent leur manifeste.
+Examples: Java 17 for Minecraft 1.20.1; Java 21 for 1.20.5 / 1.21. Later versions follow their manifest.
 
-## Données
+## Data
 
-Dossier géré par Tauri, affiché dans les paramètres. Sur macOS :
+Tauri manages the data directory and displays it in settings. On macOS:
 
 ```text
 ~/Library/Application Support/dev.hydro.hxlauncher/
-├── state.json                  # Paramètres non secrets et instances
+├── state.json                  # Non-secret settings and instances
 ├── minecraft/
-│   ├── versions/               # Manifeste et client Minecraft
+│   ├── versions/               # Minecraft manifests and client
 │   ├── libraries/
 │   └── assets/
-└── instances/<id>/             # Dossier de jeu isolé
+└── instances/<id>/             # Isolated game directory
     ├── natives/
-    ├── saves/                  # Créé par Minecraft
-    └── launcher-game.log       # stdout/stderr du jeu
+    ├── saves/                  # Created by Minecraft
+    └── launcher-game.log       # Game stdout/stderr
 ```
 
-Les jetons persistants restent dans le trousseau système, jamais dans `state.json`. Le launcher ne journalise pas la ligne de commande Java, qui contient le jeton de session. Les logs de jeu sont locaux.
+Persistent tokens stay in the system keychain and never in `state.json`. The launcher does not log the Java command line, which contains the session token. Game logs remain local.
 
-## Configuration du launcher
+## Launcher configuration
 
-Les utilisateurs n’ont aucun identifiant technique à saisir dans les réglages. Renseigne le `.env` à la racine (voir `.env.example`) avant `npm run tauri dev` ou un build. Après chaque modification, relance `npm run tauri dev` : le build Rust incorpore les valeurs au démarrage de l’application.
+Users do not enter technical identifiers in the settings. Fill in the root `.env` file (see `.env.example`) before running `npm run tauri dev` or building. After each change, restart `npm run tauri dev`: the Rust build embeds the values when the application starts.
 
 ```dotenv
-MICROSOFT_CLIENT_ID=ton-id-application
-CURSEFORGE_API_KEY=ta-cle-api
+MICROSOFT_CLIENT_ID=your-application-id
+CURSEFORGE_API_KEY=your-api-key
 ```
 
-Les variables du processus sont prioritaires. Le build Rust charge `.env` et incorpore ces deux valeurs dans le binaire ; elles ne transitent pas par React. Modifier `.env` nécessite une recompilation. Le fichier est ignoré par Git. Une clé incorporée dans une application distribuée reste extractible : pour garder une clé réellement secrète en production, les appels CurseForge doivent passer par un service backend.
+Process environment variables take priority. The Rust build loads `.env` and embeds both values in the binary; they never pass through React. Changing `.env` requires a rebuild. The file is ignored by Git. A key embedded in a distributed application can still be extracted; for a truly private production key, CurseForge calls should go through a backend service.
 
-## Import CurseForge
+## CurseForge import
 
-**Modpacks → Choisir un ZIP → Installer.** L’import suit les versions exactes du manifeste, télécharge les fichiers avec l’API officielle et contrôle leur SHA-1. Les mods vont dans `mods`, les packs de ressources dans `resourcepacks`, les shaders dans `shaderpacks`. Les configurations sont extraites dans un dossier temporaire ; l’instance apparaît à l’accueil uniquement après installation complète.
+**Modpacks → Choose a ZIP → Install.** The import follows the exact versions from the manifest, downloads files through the official API, and verifies their SHA-1. Mods go to `mods`, resource packs to `resourcepacks`, and shaders to `shaderpacks`. Configurations are extracted into a temporary directory; the instance appears on the home screen only after the full installation succeeds.
 
-Fabric, Quilt, Forge et NeoForge sont installés via `mc-launcher-core` 0.1.2 et les sources officielles. Les installateurs Forge/NeoForge utilisent le Java configuré, avec journal `modded-runtime/loader-install.log` et délai maximal de 15 minutes. Le moteur partagé et les dossiers de jeu sont séparés. Une licence Minecraft et une connexion Microsoft sont nécessaires pour jouer, pas pour installer.
+Fabric, Quilt, Forge, and NeoForge are installed through `mc-launcher-core` 0.1.2 and official sources. Forge/NeoForge installers use the configured Java runtime, write to `modded-runtime/loader-install.log`, and have a 15-minute maximum duration. The shared runtime and game directories are separated. A Minecraft license and Microsoft sign-in are required to play, not to install.
 
-L’absence de clé, un téléchargement interdit par l’auteur, une empreinte manquante ou un fichier en double bloque l’import avec une erreur explicite. Aucun mod référencé n’est ignoré silencieusement, y compris les fichiers facultatifs. En cas d’échec, les fichiers temporaires sont nettoyés et aucune instance incomplète n’est publiée. Les ressources Minecraft déjà téléchargées restent en cache pour une nouvelle tentative. Reprise des mods et annulation ne sont pas encore proposées.
+Missing keys, author-blocked downloads, missing hashes, and duplicate files stop the import with an explicit error. No referenced mod is silently skipped, including optional files. On failure, temporary files are cleaned up and no incomplete instance is published. Already-downloaded Minecraft resources remain cached for a retry. Mod resume and installation cancellation are not available yet.
 
 ## Structure
 
-- `src/App.tsx` : bibliothèque, compte, import, paramètres, activité.
-- `src/Player.tsx` : personnage 3D animé avec `skinview3d`, modèles classic/slim et gestion de la durée de vie WebGL.
-- `public/skins/steve.png` : texture Steve extraite du client officiel Mojang 1.21.1 (asset Minecraft, propriété de Mojang/Microsoft).
-- `src-tauri/src/auth.rs` : intégration des bibliothèques d’authentification et du trousseau.
-- `src-tauri/src/minecraft.rs` : manifests, téléchargement, règles et lancement.
-- `src-tauri/src/packs.rs` : contrôle des archives, API CurseForge et publication des instances.
-- `src-tauri/src/modded.rs` : installation des modloaders et lancement des packs.
-- `src-tauri/src/lib.rs` : commandes Tauri et persistance.
+- `src/App.tsx`: library, account, import, settings, and activity.
+- `src/Player.tsx`: animated 3D character with `skinview3d`, classic/slim models, and WebGL lifecycle handling.
+- `public/skins/steve.png`: Steve texture extracted from the official Mojang 1.21.1 client (Minecraft asset owned by Mojang/Microsoft).
+- `src-tauri/src/auth.rs`: authentication libraries and keychain integration.
+- `src-tauri/src/minecraft.rs`: manifests, downloads, rules, and launching.
+- `src-tauri/src/packs.rs`: archive checks, CurseForge API, and instance publication.
+- `src-tauri/src/modded.rs`: modloader installation and modpack launching.
+- `src-tauri/src/lib.rs`: Tauri commands and persistence.
 
-## Validation et limites
+## Validation and limitations
 
-La compilation frontend et 11 tests Rust couvrent les chemins sûrs, règles/arguments de lancement, manifestes CurseForge, routage des fichiers et extraction sans écrasement. Un test réseau séparé vérifie les métadonnées officielles Mojang/Fabric et la construction de la commande de lancement. La connexion réelle, le téléchargement intégral et une partie Minecraft nécessitent ton compte ; ils ne sont pas validés par ces tests. Les builds Windows/Linux nécessitent leurs propres essais. Le bundle de développement macOS n’est pas signé pour distribution.
+The frontend build and 11 Rust tests cover safe paths, launch rules/arguments, CurseForge manifests, file routing, and non-overwriting extraction. A separate network test checks official Mojang/Fabric metadata and launch command construction. Real sign-in, full downloads, and part of Minecraft require your account and are not covered by these tests. Windows/Linux builds require their own validation. The macOS development bundle is unsigned.
 
-Pas encore : installation automatique de Java, gestion des snapshots et anciennes versions, suppression/duplication des instances, import depuis URL, réparation et annulation d’installation.
+Not yet supported: automatic Java installation, snapshots and older versions, instance deletion/duplication, URL imports, repair, and installation cancellation.
 
-## Interface pastel et skin
+## Pastel interface and skin
 
-Fenêtre sans décorations natives, barre de déplacement et boutons réduire/agrandir/fermer personnalisés. Fond rose, bleu et sable avec panneaux translucides. La fenêtre native est opaque pour éviter les problèmes de composition ; les transparences des panneaux restent des effets internes à l’interface.
+The window uses a custom drag bar and custom minimize/maximize/close controls. Its pink, blue, and sand background uses translucent panels. The native window is opaque to avoid composition glitches; panel transparency remains an internal interface effect.
 
-L’accueil utilise `skinview3d` : animation idle, rotation à la souris, arrêt du rendu lorsque la page est cachée et respect de la préférence de réduction des animations. Steve est disponible localement sans connexion. Après connexion, le skin actif du profil Minecraft est téléchargé par Rust uniquement depuis `https://textures.minecraft.net`, sans jeton envoyé à ce serveur ; les variantes classic/slim sont respectées. En cas d’échec, Steve reste affiché avec un statut explicite. Le remplacement par un skin de compte réel nécessite de connecter ton compte pour être validé de bout en bout.
+The home screen uses `skinview3d`: idle animation, mouse rotation, rendering paused when the page is hidden, and reduced-motion support. Steve is available locally without a connection. After sign-in, the active Minecraft profile skin is downloaded by Rust only from `https://textures.minecraft.net`, without sending a token to that server; classic/slim variants are preserved. If loading fails, Steve remains visible with an explicit status. Showing a real account skin requires a connected account.
 
-Sur macOS, `tauri.macos.conf.json` utilise une fenêtre native opaque avec titre superposé masqué : macOS découpe les coins arrondis. Les boutons système sont masqués dans `setup` au profit des commandes du launcher. Aucun masque CSS extérieur ni transparence native ne sont nécessaires.
+On macOS, `tauri.macos.conf.json` uses an opaque native window with a hidden overlay title bar so macOS clips the rounded corners. System buttons are hidden in `setup` in favor of the launcher's controls. No outer CSS mask or native transparency is required.

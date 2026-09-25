@@ -79,8 +79,10 @@ Users do not enter technical identifiers in the settings. Fill in the root `.env
 
 ```dotenv
 MICROSOFT_CLIENT_ID=your-application-id
-CURSEFORGE_API_KEY=your-api-key
+CURSEFORGE_API_KEY='your-api-key'
 ```
+
+Keep the single quotes around the CurseForge key: otherwise `.env` expands its `$` characters and corrupts the key. Rebuild and restart the launcher after changing `.env`.
 
 Process environment variables take priority. The Rust build loads `.env` and embeds both values in the binary; they never pass through React. Changing `.env` requires a rebuild. The file is ignored by Git. A key embedded in a distributed application can still be extracted; for a truly private production key, CurseForge calls should go through a backend service.
 

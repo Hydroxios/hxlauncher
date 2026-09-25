@@ -1,7 +1,9 @@
 mod auth;
+mod instances;
 mod minecraft;
 mod modded;
 mod packs;
+mod runtime;
 pub fn microsoft_client_id() -> String {
     std::env::var("MICROSOFT_CLIENT_ID")
         .ok()
@@ -9,6 +11,7 @@ pub fn microsoft_client_id() -> String {
         .or_else(|| option_env!("MICROSOFT_CLIENT_ID").map(str::to_owned))
         .unwrap_or_default()
 }
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Mutex};
 use tauri::Manager;
@@ -20,14 +23,15 @@ pub fn err(e: impl std::fmt::Display) -> String {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
-    pub java_path: String,
     pub memory_mb: u32,
+    #[serde(default)]
+    pub instances_directory: String,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            java_path: "java".into(),
             memory_mb: 4096,
+            instances_directory: String::new(),
         }
     }
 }
@@ -41,7 +45,11 @@ pub struct Instance {
     pub status: String,
     pub mod_count: usize,
     #[serde(default)]
+    pub icon_path: Option<String>,
+    #[serde(default)]
     pub profile_id: Option<String>,
+    #[serde(default)]
+    pub directory: Option<String>,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,12 +57,30 @@ pub struct Store {
     pub settings: Settings,
     pub instances: Vec<Instance>,
 }
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryInfo {
+    pub total_mb: u32,
+}
 pub struct AppState {
     pub root: PathBuf,
     pub store: Mutex<Store>,
     pub session: Mutex<Option<auth::Session>>,
     pub pending: Mutex<Option<auth::Pending>>,
     pub busy: tokio::sync::Mutex<()>,
+}
+pub fn instances_root(state: &AppState) -> PathBuf {
+    let configured = state
+        .store
+        .lock()
+        .ok()
+        .map(|store| store.settings.instances_directory.clone())
+        .unwrap_or_default();
+    if configured.trim().is_empty() {
+        state.root.join("instances")
+    } else {
+        PathBuf::from(configured)
+    }
 }
 impl AppState {
     pub fn save(&self) -> Result<()> {
@@ -80,7 +106,27 @@ pub fn http() -> reqwest::Client {
 }
 #[tauri::command]
 fn get_store(state: tauri::State<AppState>) -> Result<Store> {
-    Ok(state.store.lock().map_err(err)?.clone())
+    let mut store = state.store.lock().map_err(err)?.clone();
+    for instance in &mut store.instances {
+        instance.icon_path = instance.icon_path.as_ref().and_then(|path| {
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.len() > 2 * 1024 * 1024 {
+                return None;
+            }
+            Some(format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            ))
+        });
+    }
+    Ok(store)
+}
+#[tauri::command]
+fn system_memory() -> MemoryInfo {
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    let total_mb = (system.total_memory() / 1024 / 1024) as u32;
+    MemoryInfo { total_mb }
 }
 #[tauri::command]
 fn save_settings(settings: Settings, state: tauri::State<AppState>) -> Result<()> {
@@ -91,8 +137,9 @@ fn save_settings(settings: Settings, state: tauri::State<AppState>) -> Result<()
     if !(1024..=32768).contains(&settings.memory_mb) {
         return Err("Mémoire : entre 1 et 32 Go.".into());
     }
-    if settings.java_path.trim().is_empty() {
-        return Err("Indique un exécutable Java.".into());
+    if !settings.instances_directory.trim().is_empty() {
+        std::fs::create_dir_all(&settings.instances_directory)
+            .map_err(|e| format!("Impossible de créer le dossier des instances : {e}"))?;
     }
     state.store.lock().map_err(err)?.settings = settings;
     state.save()
@@ -121,12 +168,14 @@ async fn create_instance(
             .as_millis()
     );
     let instance = Instance {
+        directory: Some(instances::available_name(&state, &name)?),
         id,
         name: name.trim().into(),
         version,
         loader: "Vanilla".into(),
         status: "À installer".into(),
         mod_count: 0,
+        icon_path: None,
         profile_id: None,
     };
     state
@@ -139,22 +188,60 @@ async fn create_instance(
     Ok(instance)
 }
 #[tauri::command]
-async fn check_java(path: String) -> Result<String> {
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tokio::process::Command::new(path).arg("-version").output(),
-    )
-    .await
-    .map_err(|_| "Java ne répond pas.")?
-    .map_err(|e| format!("Java introuvable : {e}"))?;
-    if !result.status.success() {
-        return Err(String::from_utf8_lossy(&result.stderr).into());
+fn set_instance_icon(id: String, path: String, state: tauri::State<AppState>) -> Result<()> {
+    let _guard = state
+        .busy
+        .try_lock()
+        .map_err(|_| "Attends la fin de l’opération avant de modifier l’icône.")?;
+    let source = std::path::PathBuf::from(path);
+    if source.extension().and_then(|value| value.to_str()) != Some("png") {
+        return Err("L’icône doit être un fichier PNG.".into());
     }
-    Ok(String::from_utf8_lossy(&result.stderr)
-        .lines()
-        .next()
-        .unwrap_or("Java disponible")
-        .into())
+    let bytes = std::fs::read(&source).map_err(err)?;
+    if bytes.len() > 2 * 1024 * 1024 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("L’icône doit être un PNG valide de 2 Mo maximum.".into());
+    }
+    let target = instances::directory(&state, &id)?.join("icon.png");
+    std::fs::create_dir_all(target.parent().ok_or("Dossier d’icône invalide.")?).map_err(err)?;
+    std::fs::write(&target, bytes).map_err(err)?;
+    let mut store = state.store.lock().map_err(err)?;
+    let instance = store
+        .instances
+        .iter_mut()
+        .find(|instance| instance.id == id)
+        .ok_or("Instance introuvable.")?;
+    instance.icon_path = Some(target.to_string_lossy().into());
+    drop(store);
+    state.save()
+}
+#[tauri::command]
+fn delete_instance(id: String, state: tauri::State<AppState>) -> Result<()> {
+    let _guard = state
+        .busy
+        .try_lock()
+        .map_err(|_| "Attends la fin de l’opération avant de supprimer une instance.")?;
+    let instance_path = instances::directory(&state, &id)?;
+    if instance_path.exists() {
+        std::fs::remove_dir_all(&instance_path)
+            .map_err(|e| format!("Impossible de supprimer l’instance : {e}"))?;
+    }
+    let removed = state
+        .store
+        .lock()
+        .map_err(err)?
+        .instances
+        .iter()
+        .any(|instance| instance.id == id);
+    if !removed {
+        return Err("Instance introuvable.".into());
+    }
+    state
+        .store
+        .lock()
+        .map_err(err)?
+        .instances
+        .retain(|instance| instance.id != id);
+    state.save()
 }
 #[tauri::command]
 fn data_directory(state: tauri::State<AppState>) -> String {
@@ -206,9 +293,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_store,
+            system_memory,
             save_settings,
             create_instance,
-            check_java,
+            delete_instance,
+            set_instance_icon,
             data_directory,
             auth::begin_login,
             auth::skin_texture,

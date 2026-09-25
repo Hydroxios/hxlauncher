@@ -213,6 +213,30 @@ async fn artifact(value: &Value, root: &Path) -> Result<PathBuf> {
     .await?;
     Ok(path)
 }
+fn compatible_library_artifact(lib: &Value, macos: bool) -> Value {
+    // JNA 5.12.1 (Minecraft 1.20.1) aborts on long dlerror messages on macOS.
+    // JNA 5.13.0 fixes upstream issue java-native-access/jna#1452. Keep the
+    // original Mojang manifest intact and pin both replacement artifacts.
+    let replacement = if macos {
+        match lib["name"].as_str() {
+            Some("net.java.dev.jna:jna:5.12.1") => {
+                Some(("jna", "1200e7ebeedbe0d10062093f32925a912020e747"))
+            }
+            Some("net.java.dev.jna:jna-platform:5.12.1") => {
+                Some(("jna-platform", "88e9a306715e9379f3122415ef4ae759a352640d"))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if let Some((name, sha1)) = replacement {
+        let path = format!("net/java/dev/jna/{name}/5.13.0/{name}-5.13.0.jar");
+        serde_json::json!({"url": format!("https://libraries.minecraft.net/{path}"), "path": path, "sha1": sha1})
+    } else {
+        lib["downloads"]["artifact"].clone()
+    }
+}
 fn extract_natives(jar: &Path, dest: &Path) -> Result<()> {
     let mut zip = zip::ZipArchive::new(std::fs::File::open(jar).map_err(err)?).map_err(err)?;
     let mut total = 0u64;
@@ -268,19 +292,7 @@ async fn launch(id: &str, app: &tauri::AppHandle, state: &AppState) -> Result<()
             "L’installation des modloaders sera ajoutée dans une prochaine version.".into(),
         );
     }
-    progress(app, "prepare", "Vérification de Java et du compte…", 0, 0);
-    let java = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tokio::process::Command::new(&settings.java_path)
-            .arg("-version")
-            .output(),
-    )
-    .await
-    .map_err(|_| "Java ne répond pas.")?
-    .map_err(|e| format!("Installe Java puis indique son chemin dans les paramètres : {e}"))?;
-    if !java.status.success() {
-        return Err("Java ne démarre pas. Vérifie le chemin dans les paramètres.".into());
-    }
+    progress(app, "prepare", "Vérification du compte…", 0, 0);
     let session = auth::refresh(state)
         .await?
         .ok_or("Connecte-toi avec Microsoft avant de jouer.")?;
@@ -292,7 +304,7 @@ async fn launch(id: &str, app: &tauri::AppHandle, state: &AppState) -> Result<()
         .iter()
         .find(|v| v["id"] == instance.version)
         .ok_or("Version introuvable chez Mojang.")?;
-    let game = safe_path(&state.root.join("instances"), id)?;
+    let game = crate::instances::directory(state, id)?;
     tokio::fs::create_dir_all(&game).await.map_err(err)?;
     let shared = state.root.join("minecraft");
     let version_dir = safe_path(&shared.join("versions"), &instance.version)?;
@@ -306,23 +318,20 @@ async fn launch(id: &str, app: &tauri::AppHandle, state: &AppState) -> Result<()
     .await?;
     let meta: Value =
         serde_json::from_slice(&tokio::fs::read(metadata_path).await.map_err(err)?).map_err(err)?;
-    let required_java = meta["javaVersion"]["majorVersion"].as_u64().unwrap_or(17);
-    let java_text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&java.stderr),
-        String::from_utf8_lossy(&java.stdout)
-    );
-    let actual = regex::Regex::new(r#"version "(\d+)"#)
-        .map_err(err)?
-        .captures(&java_text)
-        .and_then(|c| c.get(1))
-        .and_then(|v| v.as_str().parse::<u64>().ok());
-    if actual.is_none_or(|v| v < required_java) {
-        return Err(format!("Minecraft {} nécessite Java {required_java} ou supérieur. Configure le bon exécutable dans les paramètres.",instance.version));
-    }
+    let java_component = meta["javaVersion"]["component"]
+        .as_str()
+        .unwrap_or("java-runtime-gamma")
+        .to_owned();
+    let java = crate::modded::ensure_java(shared.clone(), java_component, app.clone()).await?;
     let client = version_dir.join("client.jar");
     let d = &meta["downloads"]["client"];
-    progress(app, "download", "Téléchargement de Minecraft…", 0, 0);
+    progress(
+        app,
+        "download",
+        "Vérification de Minecraft et récupération si nécessaire…",
+        0,
+        0,
+    );
     download(
         d["url"].as_str().ok_or("Client absent.")?,
         &client,
@@ -344,12 +353,18 @@ async fn launch(id: &str, app: &tauri::AppHandle, state: &AppState) -> Result<()
         progress(
             app,
             "download",
-            "Installation des bibliothèques…",
+            "Vérification des bibliothèques · téléchargement si nécessaire…",
             i,
             libs.len(),
         );
         if lib["downloads"].get("artifact").is_some() {
-            classpath.push(artifact(&lib["downloads"]["artifact"], &libraries).await?);
+            classpath.push(
+                artifact(
+                    &compatible_library_artifact(lib, cfg!(target_os = "macos")),
+                    &libraries,
+                )
+                .await?,
+            );
         }
         if let Some(classifier) = lib["natives"][os()].as_str() {
             if cfg!(target_arch = "aarch64") {
@@ -417,7 +432,7 @@ async fn launch(id: &str, app: &tauri::AppHandle, state: &AppState) -> Result<()
                     progress(
                         app,
                         "download",
-                        "Synchronisation des ressources…",
+                        "Vérification des assets · téléchargement si nécessaire…",
                         count,
                         total,
                     );
@@ -470,7 +485,7 @@ async fn launch(id: &str, app: &tauri::AppHandle, state: &AppState) -> Result<()
     args.extend(arguments(&meta["arguments"]["game"], &vars)?);
     // Never write the command line or the access token to launcher logs.
     let log = std::fs::File::create(game.join("launcher-game.log")).map_err(err)?;
-    let mut child = tokio::process::Command::new(&settings.java_path)
+    let mut child = tokio::process::Command::new(java)
         .args(args)
         .current_dir(&game)
         .stdin(Stdio::null())
@@ -506,6 +521,66 @@ async fn launch(id: &str, app: &tauri::AppHandle, state: &AppState) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn macos_jna_fix_replaces_only_affected_libraries() {
+        for name in ["jna", "jna-platform"] {
+            let lib = serde_json::json!({"name": format!("net.java.dev.jna:{name}:5.12.1"), "downloads":{"artifact":{"path":"original.jar"}}});
+            let fixed = compatible_library_artifact(&lib, true);
+            assert_eq!(
+                fixed["path"],
+                format!("net/java/dev/jna/{name}/5.13.0/{name}-5.13.0.jar")
+            );
+            assert_eq!(fixed["sha1"].as_str().unwrap().len(), 40);
+            assert_eq!(
+                compatible_library_artifact(&lib, false)["path"],
+                "original.jar"
+            );
+        }
+        for name in [
+            "net.java.dev.jna:jna:5.13.0",
+            "net.java.dev.jna:jna:5.17.0",
+            "other:library:5.12.1",
+        ] {
+            let lib =
+                serde_json::json!({"name":name,"downloads":{"artifact":{"path":"unchanged.jar"}}});
+            assert_eq!(
+                compatible_library_artifact(&lib, true)["path"],
+                "unchanged.jar"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn valid_cached_files_are_not_downloaded_or_rewritten() {
+        let path = std::env::temp_dir().join(format!(
+            "hx-cache-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bytes = b"cached library or asset";
+        tokio::fs::write(&path, bytes).await.unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let hash = format!("{:x}", Sha1::digest(bytes));
+        // An unusable URL proves the cache returns before any network access.
+        download("http://invalid.example", &path, Some(&hash), 1024)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), bytes);
+        tokio::fs::write(&path, b"corrupt").await.unwrap();
+        assert!(download("http://invalid.example", &path, Some(&hash), 1024)
+            .await
+            .is_err());
+        tokio::fs::remove_file(&path).await.unwrap();
+        assert!(download("http://invalid.example", &path, Some(&hash), 1024)
+            .await
+            .is_err());
+    }
     #[test]
     fn rejects_escape_paths() {
         for p in [

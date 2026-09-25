@@ -1,6 +1,5 @@
-import CopyCodeButton from "./CopyCodeButton";
+import CopyCodeButton from "./components/CopyCodeButton";
 import { useEffect, useRef, useState } from "react";
-import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -8,7 +7,6 @@ import {
   ArrowDownToLine,
   ArrowRight,
   Box,
-  Check,
   FileArchive,
   LoaderCircle,
   LogOut,
@@ -20,59 +18,43 @@ import {
   ExternalLink,
   Minus,
   Maximize2,
+  Moon,
+  Sun,
   Home,
   Layers3,
   Terminal,
+  Trash2,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import Player, { type PlayerProfile } from "./Player";
-type Settings = { javaPath: string; memoryMb: number };
-type Instance = {
-  id: string;
-  name: string;
-  version: string;
-  loader: string;
-  status: string;
-  modCount: number;
-};
-type Store = { settings: Settings; instances: Instance[] };
 type Profile = PlayerProfile;
-type Progress = {
-  phase: string;
-  message: string;
-  current: number;
-  total: number;
+type MemoryInfo = {
+  totalMb: number;
 };
-type Pack = {
-  name: string;
-  version: string;
-  author: string;
-  minecraft: string;
-  loader: string;
-  files: { projectID: number; fileID: number; required: boolean }[];
-  overrideCount: number;
-  archivePath: string;
+import type {
+  Device,
+  Instance,
+  LogEntry,
+  Pack,
+  Progress,
+  Settings,
+  Store,
+} from "./types";
+import { call, desktop, getErrorMessage } from "./lib/tauri";
+import { usePageNavigation } from "./hooks/usePageNavigation";
+import { useToast } from "./hooks/useToast";
+
+const defaults: Settings = { memoryMb: 4096, instancesDirectory: "" };
+const previewProfile: Profile = {
+  id: "preview-hydroxios",
+  name: "Hydroxios",
+  skins: [{ url: "/skins/hydro.png", variant: "CLASSIC", state: "ACTIVE" }],
 };
-type Device = {
-  userCode: string;
-  verificationUri: string;
-  expiresIn: number;
-  interval: number;
-};
-type Page = "library" | "packs" | "settings" | "activity";
-const desktop = isTauri();
-const defaults: Settings = { javaPath: "java", memoryMb: 4096 };
-async function call<T>(
-  command: string,
-  args?: Record<string, unknown>,
-): Promise<T> {
-  if (!desktop)
-    throw new Error(
-      "Ouvre l’application Tauri pour utiliser cette fonction : npm run tauri dev.",
-    );
-  return invoke<T>(command, args);
-}
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const message = getErrorMessage;
+const navigationItems = [
+  { id: "library", label: "Accueil", icon: Home },
+  { id: "packs", label: "Instances", icon: Layers3 },
+] as const;
 function MicrosoftLogo() {
   return (
     <span className="ms-logo">
@@ -83,34 +65,30 @@ function MicrosoftLogo() {
     </span>
   );
 }
+function InstanceIcon({ instance }: { instance: Instance }) {
+  return instance.iconPath ? (
+    <img className="instance-image" src={instance.iconPath} alt="" />
+  ) : (
+    <Box size={20} />
+  );
+}
 export default function App() {
-  const [navigation, setNavigation] = useState<{
-    page: Page;
-    direction: "forward" | "backward";
-    animated: boolean;
-  }>({ page: "library", direction: "forward", animated: false });
-  const page = navigation.page;
-  function setPage(next: Page) {
-    const order: Page[] = ["library", "packs", "settings", "activity"];
-    setNavigation((previous) =>
-      previous.page === next
-        ? previous
-        : {
-            page: next,
-            direction:
-              order.indexOf(next) > order.indexOf(previous.page)
-                ? "forward"
-                : "backward",
-            animated: true,
-          },
-    );
-  }
+  const [darkMode, setDarkMode] = useState(() => {
+    const saved = localStorage.getItem("hx-theme");
+    return saved
+      ? saved === "dark"
+      : window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
+  const { page, direction, animated, setPage } = usePageNavigation();
   const [store, setStore] = useState<Store>({
     settings: defaults,
     instances: [],
   });
   const [settings, setSettings] = useState(defaults);
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const [memoryInfo, setMemoryInfo] = useState<MemoryInfo | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(
+    desktop ? null : previewProfile,
+  );
   const [selected, setSelected] = useState("");
   const [modal, setModal] = useState<"create" | "login" | null>(null);
   const [device, setDevice] = useState<Device | null>(null);
@@ -121,29 +99,41 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [working, setWorking] = useState(false);
-  const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(
-    null,
-  );
   const [progress, setProgress] = useState<Progress | null>(null);
-  const [logs, setLogs] = useState<{ time: string; text: string }[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [pack, setPack] = useState<Pack | null>(null);
   const [directory, setDirectory] = useState("");
   const loginGeneration = useRef(0);
+  const [settingsReady, setSettingsReady] = useState(!desktop);
+  const [pendingSettings, setPendingSettings] = useState<Settings | null>(null);
+  const [restoringSession, setRestoringSession] = useState(desktop);
+  const { toast, showToast, dismissToast } = useToast();
   const chosen =
     store.instances.find((i) => i.id === selected) ?? store.instances[0];
-  const notify = (text: string, error = false) => setNotice({ text, error });
-  const log = (text: string) =>
-    setLogs((l) =>
-      [{ time: new Date().toLocaleTimeString("fr-FR"), text }, ...l].slice(
-        0,
-        200,
-      ),
-    );
+  const modpacks = store.instances;
+  const notify = showToast;
+  const log = (text: string) => {
+    const entry = { time: new Date().toLocaleTimeString("fr-FR"), text };
+    setLogs((entries) => [entry, ...entries].slice(0, 200));
+  };
+  function updateSettings(next: Settings) {
+    if (
+      !settingsReady ||
+      (next.memoryMb === settings.memoryMb &&
+        next.instancesDirectory === settings.instancesDirectory)
+    )
+      return;
+    setSettings(next);
+    setPendingSettings(next);
+  }
   async function reload() {
     const s = await call<Store>("get_store");
     setStore(s);
     return s;
   }
+  useEffect(() => {
+    localStorage.setItem("hx-theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
   useEffect(() => {
     if (!desktop) return;
     let disposed = false;
@@ -165,6 +155,16 @@ export default function App() {
         if (!disposed) {
           setStore(s);
           setSettings(s.settings);
+          setSettingsReady(true);
+        }
+      })
+      .catch((e) => {
+        if (!disposed) notify(message(e), true);
+      });
+    void call<MemoryInfo>("system_memory")
+      .then((info) => {
+        if (!disposed) {
+          setMemoryInfo(info);
         }
       })
       .catch((e) => {
@@ -179,12 +179,24 @@ export default function App() {
       })
       .catch((e) => {
         if (!disposed) notify(message(e), true);
+      })
+      .finally(() => {
+        if (!disposed) setRestoringSession(false);
       });
     return () => {
       disposed = true;
       cleanup?.();
     };
   }, []);
+  useEffect(() => {
+    if (!desktop || !pendingSettings) return;
+    const timeout = window.setTimeout(() => {
+      void call("save_settings", { settings: pendingSettings }).catch((e) =>
+        notify(message(e), true),
+      );
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [pendingSettings]);
   useEffect(() => {
     if (!device || modal !== "login") return;
     let stopped = false;
@@ -292,10 +304,17 @@ export default function App() {
     if (!pack || busy) return;
     setBusy(true);
     setInstalling(true);
-    setNotice(null);
-    setProgress({ phase: "prepare", message: "Préparation du pack…", current: 0, total: 0 });
+    dismissToast();
+    setProgress({
+      phase: "prepare",
+      message: "Préparation du pack…",
+      current: 0,
+      total: 0,
+    });
     try {
-      const instance = await call<Instance>("install_modpack", { path: pack.archivePath });
+      const instance = await call<Instance>("install_modpack", {
+        path: pack.archivePath,
+      });
       await reload();
       setSelected(instance.id);
       setPack(null);
@@ -331,16 +350,62 @@ export default function App() {
       setWorking(false);
     }
   }
-  async function save() {
+  async function chooseInstancesDirectory() {
+    if (!desktop) {
+      notify(
+        "La sélection du dossier est disponible dans l’application Tauri.",
+        true,
+      );
+      return;
+    }
+    try {
+      const path = await open({ directory: true, multiple: false });
+      if (typeof path === "string") {
+        updateSettings({ ...settings, instancesDirectory: path });
+      }
+    } catch (e) {
+      notify(message(e), true);
+    }
+  }
+  async function deleteInstance(instance: Instance) {
+    if (
+      !window.confirm(
+        `Supprimer l’instance « ${instance.name} » et tous ses fichiers ?`,
+      )
+    ) {
+      return;
+    }
     setWorking(true);
     try {
-      await call("save_settings", { settings });
+      await call("delete_instance", { id: instance.id });
+      if (selected === instance.id) setSelected("");
       await reload();
-      notify("Paramètres enregistrés.");
+      notify(`${instance.name} a été supprimée.`);
     } catch (e) {
       notify(message(e), true);
     } finally {
       setWorking(false);
+    }
+  }
+  async function chooseInstanceIcon(instance: Instance) {
+    if (!desktop) {
+      notify(
+        "La personnalisation des icônes est disponible dans l’application Tauri.",
+        true,
+      );
+      return;
+    }
+    try {
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "Icône PNG", extensions: ["png"] }],
+      });
+      if (typeof path !== "string") return;
+      await call("set_instance_icon", { id: instance.id, path });
+      await reload();
+      notify(`Icône de ${instance.name} mise à jour.`);
+    } catch (e) {
+      notify(message(e), true);
     }
   }
   async function windowAction(action: "close" | "minimize" | "toggleMaximize") {
@@ -352,7 +417,10 @@ export default function App() {
     }
   }
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell${darkMode ? " dark" : ""}`}
+      onContextMenu={(event) => event.preventDefault()}
+    >
       <header className="titlebar" data-tauri-drag-region>
         <span className="brand" data-tauri-drag-region>
           Hx<span>launcher</span>
@@ -380,13 +448,7 @@ export default function App() {
       </header>
       <div className="toolbar">
         <nav aria-label="Navigation principale">
-          {(
-            [
-              { id: "library", label: "Accueil", icon: Home },
-              { id: "packs", label: "Modpacks", icon: Layers3 },
-              { id: "settings", label: "Réglages", icon: Settings2 },
-            ] as const
-          ).map((n) => (
+          {navigationItems.map((n) => (
             <button
               className={page === n.id ? "active" : ""}
               aria-current={page === n.id ? "page" : undefined}
@@ -398,38 +460,65 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <button
-          className="account"
-          disabled={busy || loginBusy}
-          onClick={() => (profile ? setPage("settings") : void startLogin())}
-        >
-          <UserRound size={16} />
-          {profile?.name ?? "Connexion Microsoft"}
-          {profile && <span className="online-dot" />}
-        </button>
-      </div>
-      {notice && !modal && (
-        <div className={`notice ${notice.error ? "error" : ""}`} role="status">
-          <span>{notice.text}</span>
+        <div className="toolbar-actions">
           <button
-            aria-label="Fermer la notification"
-            onClick={() => setNotice(null)}
+            className="account"
+            disabled={busy || loginBusy || restoringSession}
+            onClick={() => (profile ? setPage("settings") : void startLogin())}
           >
+            {profile ? (
+              <img
+                className="account-avatar"
+                src={`https://mc-heads.net/avatar/${encodeURIComponent(profile.name)}/32`}
+                alt={`Avatar de ${profile.name}`}
+              />
+            ) : (
+              <UserRound size={16} />
+            )}
+            {restoringSession
+              ? "Chargement du compte…"
+              : (profile?.name ?? "Connexion Microsoft")}
+            {profile && <span className="online-dot" />}
+          </button>
+          <button
+            className="toolbar-action settings-button"
+            aria-label="Ouvrir les réglages"
+            title="Réglages"
+            onClick={() => setPage("settings")}
+          >
+            <Settings2 size={16} />
+          </button>
+        </div>
+      </div>
+      {toast && (
+        <div
+          className={`notice toast ${toast.error ? "error" : ""}`}
+          role={toast.error ? "alert" : "status"}
+          aria-live="polite"
+        >
+          <span>{toast.text}</span>
+          <button aria-label="Fermer la notification" onClick={dismissToast}>
             <X size={15} />
           </button>
         </div>
       )}
       <main
         key={page}
-        className={navigation.animated ? "tab-slide" : undefined}
-        data-direction={navigation.direction}
+        className={animated ? "tab-slide" : undefined}
+        data-direction={direction}
       >
         {page === "library" && (
           <section className="home">
             <div className="home-copy">
               <div className="launch-panel">
                 <div className="instance-picker">
-                  <Box size={21} />
+                  {chosen ? (
+                    <div className="instance-picker-icon" aria-hidden="true">
+                      <InstanceIcon instance={chosen} />
+                    </div>
+                  ) : (
+                    <Box size={21} />
+                  )}
                   <div>
                     {chosen ? (
                       <select
@@ -460,7 +549,7 @@ export default function App() {
                 </div>
                 <button
                   className="button primary play-button"
-                  disabled={busy}
+                  disabled={busy || restoringSession}
                   onClick={() => void launch()}
                 >
                   {busy ? (
@@ -496,32 +585,98 @@ export default function App() {
                 <ArrowRight size={13} />
               </button>
             </div>
-            <Player profile={profile} />
+            <Player
+              profile={profile}
+              onEditSkin={() =>
+                notify("L’édition du skin sera bientôt disponible.")
+              }
+            />
           </section>
         )}
         {page === "packs" && (
           <section className="simple-page">
-            <div className="page-heading">
-              <h1>Modpacks.</h1>
-            </div>
-            <div className="page-content">
-              <div className="glass import-panel">
-                <FileArchive size={38} strokeWidth={1.2} />
-                <h2>Importer un modpack</h2>
+            <div className="page-heading page-heading-row">
+              <h1>Instances.</h1>
+              <div className="page-heading-actions">
                 <button
-                  className="button primary"
+                  className="button secondary header-icon-button"
                   disabled={working || busy}
+                  aria-label="Créer une instance"
+                  title="Créer une instance"
+                  onClick={() => void createModal()}
+                >
+                  <Plus size={17} />
+                </button>
+                <button
+                  className="button primary header-icon-button"
+                  disabled={working || busy}
+                  aria-label="Importer un modpack"
+                  title="Importer un modpack"
                   onClick={() => void inspect()}
                 >
                   {working ? (
-                    <LoaderCircle className="spin" size={17} />
+                    <LoaderCircle className="spin" size={16} />
                   ) : (
-                    <Plus size={17} />
+                    <FileArchive size={16} />
                   )}
-                  Choisir un ZIP
                 </button>
-                <small>Export CurseForge · .zip</small>
               </div>
+            </div>
+            <div className="page-content">
+              {!pack && !modpacks.length && (
+                <div className="glass empty-state">
+                  <FileArchive size={34} strokeWidth={1.2} />
+                  <h2>Aucune instance installée</h2>
+                  <p>
+                    Importe un fichier ZIP CurseForge pour retrouver tes
+                    modpacks ici.
+                  </p>
+                </div>
+              )}
+              {modpacks.map((instance) => (
+                <div className="glass modpack-item" key={instance.id}>
+                  <button
+                    className={instance.iconPath ? "" : `instance-icon`}
+                    type="button"
+                    aria-label={`Modifier l’icône de ${instance.name}`}
+                    title="Modifier l’icône"
+                    disabled={working || busy}
+                    onClick={() => void chooseInstanceIcon(instance)}
+                  >
+                    <InstanceIcon instance={instance} />
+                  </button>
+                  <div className="instance-info">
+                    <h2>{instance.name}</h2>
+                    <p>
+                      Minecraft {instance.version} · {instance.loader} ·{" "}
+                      {instance.modCount} mods
+                    </p>
+                  </div>
+                  <div className="modpack-actions">
+                    <button
+                      className="button secondary play-instance-button"
+                      disabled={working || busy}
+                      aria-label={`Jouer à ${instance.name}`}
+                      title="Jouer"
+                      onClick={() => {
+                        setSelected(instance.id);
+                        setPage("library");
+                      }}
+                    >
+                      <Play size={15} fill="currentColor" />
+                    </button>
+                    <button
+                      className="icon-button danger-button"
+                      disabled={working || busy}
+                      aria-label={`Supprimer ${instance.name}`}
+                      title="Supprimer l’instance"
+                      onClick={() => void deleteInstance(instance)}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              ))}
               {pack && (
                 <div className="glass pack-result">
                   <h2>{pack.name}</h2>
@@ -529,14 +684,27 @@ export default function App() {
                     {pack.minecraft} · {pack.loader} · {pack.files.length} mods
                     · {pack.overrideCount} configurations
                   </p>
-                  <button className="button primary" disabled={busy || working} onClick={() => void installPack()}>
-                    {installing ? <LoaderCircle className="spin" size={17} /> : <ArrowDownToLine size={17} />}
+                  <button
+                    className="button primary"
+                    disabled={busy || working}
+                    onClick={() => void installPack()}
+                  >
+                    {installing ? (
+                      <LoaderCircle className="spin" size={17} />
+                    ) : (
+                      <ArrowDownToLine size={17} />
+                    )}
                     {installing ? "Installation…" : "Installer"}
                   </button>
-                  {installing && progress && <div className="inline-progress" role="status">
-                    <span>{progress.message}</span>
-                    <progress max={progress.total || undefined} value={progress.total ? progress.current : undefined} />
-                  </div>}
+                  {installing && progress && (
+                    <div className="inline-progress" role="status">
+                      <span>{progress.message}</span>
+                      <progress
+                        max={progress.total || undefined}
+                        value={progress.total ? progress.current : undefined}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -550,88 +718,97 @@ export default function App() {
             <div className="glass settings-card">
               <div className="section-title">
                 <h2>Compte Microsoft</h2>
-                {profile && (
+                <div className="account-actions">
                   <button
-                    className="subtle-link"
-                    disabled={busy}
-                    onClick={() =>
-                      void call("logout")
-                        .then(() => setProfile(null))
-                        .catch((e) => notify(message(e), true))
-                    }
+                    className="button secondary account-action"
+                    disabled={busy || loginBusy || restoringSession}
+                    onClick={() => void startLogin()}
                   >
-                    <LogOut size={14} />
-                    Déconnexion
+                    <MicrosoftLogo />
+                    {profile ? "Changer de compte" : "Se connecter"}
                   </button>
-                )}
+                  {profile && (
+                    <button
+                      className="subtle-link logout-button"
+                      disabled={busy || restoringSession}
+                      onClick={() =>
+                        void call("logout")
+                          .then(() => setProfile(null))
+                          .catch((e) => notify(message(e), true))
+                      }
+                    >
+                      <LogOut size={14} />
+                      Déconnexion
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="settings-grid">
                 <label className="field">
-                  Exécutable Java
+                  Dossier des instances
                   <div className="input-button">
                     <input
-                      value={settings.javaPath}
-                      disabled={busy}
-                      onChange={(e) =>
-                        setSettings({ ...settings, javaPath: e.target.value })
+                      value={
+                        settings.instancesDirectory || directory + "/instances"
                       }
+                      readOnly
+                      aria-describedby="instances-directory-help"
                     />
                     <button
-                      disabled={busy || working}
-                      onClick={() => {
-                        setWorking(true);
-                        void call<string>("check_java", {
-                          path: settings.javaPath,
-                        })
-                          .then((v) => notify(v))
-                          .catch((e) => notify(message(e), true))
-                          .finally(() => setWorking(false));
-                      }}
+                      type="button"
+                      disabled={
+                        busy || working || restoringSession || !settingsReady
+                      }
+                      onClick={() => void chooseInstancesDirectory()}
                     >
-                      Vérifier
+                      Choisir
                     </button>
                   </div>
+                  <small id="instances-directory-help">
+                    Les nouveaux mondes et modpacks seront installés ici.
+                  </small>
                 </label>
                 <label className="field">
                   Mémoire <strong>{settings.memoryMb / 1024} Go</strong>
                   <input
                     type="range"
                     min={1024}
-                    max={16384}
+                    max={Math.min(memoryInfo?.totalMb ?? 16384, 32768)}
                     step={512}
                     value={settings.memoryMb}
-                    disabled={busy}
+                    disabled={busy || restoringSession || !settingsReady}
                     onChange={(e) =>
-                      setSettings({
+                      updateSettings({
                         ...settings,
                         memoryMb: Number(e.target.value),
                       })
                     }
                   />
+                  <small>
+                    {memoryInfo
+                      ? `${memoryInfo.totalMb / 1024} Go de mémoire totale détectée.`
+                      : "Détection de la mémoire totale…"}
+                  </small>
                 </label>
               </div>
-              <div className="settings-bottom">
+              <div className="theme-setting">
+                <div>
+                  <strong>Apparence</strong>
+                  <span>{darkMode ? "Mode sombre" : "Mode clair"}</span>
+                </div>
                 <button
-                  className="button primary"
-                  disabled={busy || working}
-                  onClick={() => void save()}
+                  className="theme-toggle"
+                  aria-label={
+                    darkMode
+                      ? "Activer le mode clair"
+                      : "Activer le mode sombre"
+                  }
+                  title={darkMode ? "Mode clair" : "Mode sombre"}
+                  onClick={() => setDarkMode((value) => !value)}
                 >
-                  <Check size={16} />
-                  Enregistrer
-                </button>
-                <button
-                  className="button secondary"
-                  disabled={busy || loginBusy}
-                  onClick={() => void startLogin()}
-                >
-                  <MicrosoftLogo />
-                  {profile ? "Changer de compte" : "Se connecter"}
+                  {darkMode ? <Sun size={16} /> : <Moon size={16} />}
                 </button>
               </div>
-              <details className="storage">
-                <summary>Dossier des instances</summary>
-                <p>{directory || "Disponible dans l’application native"}</p>
-              </details>
             </div>
           </section>
         )}
@@ -682,11 +859,6 @@ export default function App() {
             aria-labelledby="modal-title"
             onClick={(e) => e.stopPropagation()}
           >
-            {notice?.error && (
-              <div className="notice error" role="alert">
-                {notice.text}
-              </div>
-            )}
             <button
               className="modal-close"
               disabled={working}

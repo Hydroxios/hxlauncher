@@ -211,6 +211,30 @@ fn extract(path: &Path, game: &Path, overrides: &str) -> Result<()> {
     }
     Ok(())
 }
+fn extract_icon(path: &Path, game: &Path) -> Result<bool> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path).map_err(err)?).map_err(err)?;
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index).map_err(err)?;
+        let name = file.name().trim_end_matches('/');
+        if !name.eq_ignore_ascii_case("icon.png")
+            && !name.to_ascii_lowercase().ends_with("/icon.png")
+        {
+            continue;
+        }
+        if file.size() > 2 * 1024 * 1024 {
+            return Err("L’icône du modpack dépasse 2 Mo.".into());
+        }
+        let mut bytes = Vec::with_capacity(file.size() as usize);
+        file.read_to_end(&mut bytes).map_err(err)?;
+        if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Err("L’icône du modpack n’est pas un PNG valide.".into());
+        }
+        let target = game.join("icon.png");
+        std::fs::write(target, bytes).map_err(err)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
 fn api_key() -> Result<String> {
     std::env::var("CURSEFORGE_API_KEY")
         .ok()
@@ -241,7 +265,7 @@ async fn api(client: &reqwest::Client, key: &str, route: &str) -> Result<serde_j
             .unwrap_or_default();
         return Err(if status == 401 || status == 403 {
             if detail.is_empty() {
-                "CurseForge refuse CURSEFORGE_API_KEY (HTTP 403). Génère une nouvelle clé API CurseForge autorisée, remplace la valeur dans .env, puis redémarre le launcher.".into()
+                format!("CurseForge refuse l’accès (HTTP {status}). Vérifie les droits de la clé API et sa configuration. Dans .env, entoure sa valeur de guillemets simples pour préserver les caractères $, puis reconstruis le launcher.")
             } else {
                 format!("CurseForge refuse CURSEFORGE_API_KEY (HTTP {status}) : {detail}")
             }
@@ -280,7 +304,6 @@ async fn install_contents(
     use crate::minecraft::{download, progress};
     let game = stage.join("game");
     tokio::fs::create_dir_all(&game).await.map_err(err)?;
-    let java = state.store.lock().map_err(err)?.settings.java_path.clone();
     let key = if plan.files.is_empty() {
         String::new()
     } else {
@@ -339,11 +362,11 @@ async fn install_contents(
     tauri::async_runtime::spawn_blocking(move || extract(&archive, &g, &overrides))
         .await
         .map_err(err)??;
+    let has_icon = extract_icon(&stage.join("pack.zip"), &game)?;
     let profile_id = crate::modded::install(
         state.root.join("modded-runtime"),
         plan.minecraft.clone(),
         plan.loader.clone(),
-        java,
         app.clone(),
     )
     .await?;
@@ -358,7 +381,9 @@ async fn install_contents(
         loader: plan.loader.clone(),
         status: "Installé".into(),
         mod_count: plan.files.len(),
+        icon_path: has_icon.then(|| game.join("icon.png").to_string_lossy().into()),
         profile_id: Some(profile_id),
+        directory: None,
     })
 }
 #[tauri::command]
@@ -398,14 +423,19 @@ pub async fn install_modpack(
         drop(dest);
         let plan = inspect_modpack(archive.to_string_lossy().into()).await?;
         crate::modded::identifier(&plan.minecraft)?;
-        let instance = install_contents(&plan, &stage, &app, &state).await?;
-        let destination = state.root.join("instances").join(&id);
+        let mut instance = install_contents(&plan, &stage, &app, &state).await?;
+        let directory = crate::instances::available_name(&state, &instance.name)?;
+        let destination = safe_path(&crate::instances_root(&state), &directory)?;
+        instance.directory = Some(directory);
         tokio::fs::create_dir_all(destination.parent().unwrap())
             .await
             .map_err(err)?;
         tokio::fs::rename(stage.join("game"), &destination)
             .await
             .map_err(err)?;
+        if instance.icon_path.is_some() {
+            instance.icon_path = Some(destination.join("icon.png").to_string_lossy().into());
+        }
         state
             .store
             .lock()

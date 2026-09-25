@@ -40,39 +40,28 @@ fn reporter(app: tauri::AppHandle) -> impl FnMut(ProgressEvent) {
         }
     }
 }
-pub async fn java_check(java: &str, required: i32) -> Result<()> {
-    let out = tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio::process::Command::new(java)
-            .arg("-version")
-            .kill_on_drop(true)
-            .output(),
-    )
+pub async fn ensure_java(
+    root: PathBuf,
+    component: String,
+    app: tauri::AppHandle,
+) -> Result<PathBuf> {
+    progress(&app, "prepare", "Vérification du runtime Java…", 0, 0);
+    crate::runtime::ensure(&root, &component, |current, total| {
+        progress(
+            &app,
+            "download",
+            "Installation du runtime Java…",
+            current,
+            total,
+        );
+    })
     .await
-    .map_err(|_| "Java ne répond pas.")?
-    .map_err(|_| "Java introuvable. Indique son chemin dans les réglages.")?;
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
-    let re = regex::Regex::new(r#"version "(?:1\.)?(\d+)"#).map_err(err)?;
-    let major = re
-        .captures(&text)
-        .and_then(|c| c[1].parse::<i32>().ok())
-        .unwrap_or(0);
-    if !out.status.success() || major < required {
-        return Err(format!(
-            "Ce pack nécessite Java {required} ou supérieur. Vérifie Java dans les réglages."
-        ));
-    }
-    Ok(())
+    .map_err(|e| format!("Installation Java ({component}) : {e}"))
 }
 pub async fn install(
     root: PathBuf,
     mc: String,
     spec: String,
-    java: String,
     app: tauri::AppHandle,
 ) -> Result<String> {
     identifier(&mc)?;
@@ -94,14 +83,12 @@ pub async fn install(
     })
     .await
     .map_err(err)??;
-    java_check(
-        &java,
-        base.java_version
-            .as_ref()
-            .map(|j| j.major_version)
-            .unwrap_or(8),
-    )
-    .await?;
+    let java_component = base
+        .java_version
+        .as_ref()
+        .map(|j| j.component.clone())
+        .unwrap_or_else(|| "java-runtime-gamma".into());
+    let java = ensure_java(root.clone(), java_component, app.clone()).await?;
     let r = root.clone();
     tauri::async_runtime::spawn_blocking(move || client::write_version_json(r, &base).map_err(err))
         .await
@@ -210,19 +197,30 @@ pub async fn launch(
     let session = auth::refresh(state)
         .await?
         .ok_or("Connecte-toi avec Microsoft avant de jouer.")?;
-    let game = crate::minecraft::safe_path(&state.root.join("instances"), &instance.id)?;
+    let game = crate::instances::directory(state, &instance.id)?;
     let root = state.root.join("modded-runtime");
     let id = instance.profile_id.ok_or("Profil absent.")?;
     identifier(&id)?;
-    let java = settings.java_path.clone();
+    let version_for_java = {
+        let runtime_root = root.clone();
+        let runtime_id = id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            Launcher::new(runtime_root)
+                .load_version(&runtime_id)
+                .map_err(err)
+        })
+        .await
+        .map_err(err)??
+    };
+    let java_component = version_for_java
+        .java_version
+        .as_ref()
+        .map(|j| j.component.clone())
+        .unwrap_or_else(|| "java-runtime-gamma".into());
+    let java = ensure_java(root.clone(), java_component, app.clone()).await?;
     let command = tauri::async_runtime::spawn_blocking(move || -> Result<_> {
         let launcher = Launcher::new(root);
         let version = launcher.load_version(&id).map_err(err)?;
-        let required = version
-            .java_version
-            .as_ref()
-            .map(|j| j.major_version)
-            .unwrap_or(8);
         let command = launcher
             .build_launch_command_from_version(
                 &version,
@@ -232,19 +230,18 @@ pub async fn launch(
                         uuid: session.profile.id,
                         access_token: session.token,
                     },
-                    java_executable: Some(PathBuf::from(java)),
+                    java_executable: Some(java),
                     game_directory: Some(game),
                     launcher_name: "HX Launcher".into(),
                     ..Default::default()
                 },
             )
             .map_err(err)?;
-        Ok((command, required))
+        Ok(command)
     })
     .await
     .map_err(err)??;
-    java_check(&settings.java_path, command.1).await?;
-    let cmd = command.0;
+    let cmd = command;
     let log_path = cmd.working_dir.join("launcher-game.log");
     let log = std::fs::File::create(&log_path).map_err(err)?;
     let mut child = tokio::process::Command::new(cmd.executable)

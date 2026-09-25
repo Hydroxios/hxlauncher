@@ -1829,6 +1829,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1 0.10.7",
+ "sysinfo 0.35.2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -2517,7 +2518,7 @@ dependencies = [
  "serde_urlencoded",
  "sha1 0.11.0",
  "sha2 0.11.0",
- "sysinfo",
+ "sysinfo 0.39.6",
  "tempfile",
  "thiserror 2.0.20",
  "url",
@@ -4398,6 +4399,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "sysinfo"
+version = "0.35.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c3ffa3e4ff2b324a57f7aeb3c349656c7b127c3c189520251a648102a92496e"
+dependencies = [
+ "libc",
+ "memchr",
+ "ntapi",
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "windows 0.61.3",
 ]
 
 [[package]]

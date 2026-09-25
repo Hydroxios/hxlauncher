@@ -24,6 +24,7 @@ sha1 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 futures-util = "0.3"
 regex = "1"
+sysinfo = "0.35"
 minecraft-msa-auth = "0.5"
 async-trait = "0.1"
 oauth2 = "5"

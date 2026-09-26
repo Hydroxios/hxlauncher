@@ -1816,6 +1816,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "dotenvy",
+ "dunce",
  "futures-util",
  "keyring",
  "mc-launcher-core",

@@ -3,21 +3,23 @@ use crate::{err, minecraft::safe_path, AppState, Result, Settings};
 use std::path::{Path, PathBuf};
 
 pub fn instances_root_for(app_data: &Path, settings: &Settings) -> PathBuf {
-    if !settings.storage_directory.trim().is_empty() {
+    let path = if !settings.storage_directory.trim().is_empty() {
         PathBuf::from(&settings.storage_directory).join("instances")
     } else if !settings.instances_directory.trim().is_empty() {
         PathBuf::from(&settings.instances_directory)
     } else {
         app_data.join("instances")
-    }
+    };
+    dunce::simplified(&path).to_path_buf()
 }
 
 pub fn runtime_root_for(app_data: &Path, configured: &str) -> PathBuf {
-    if configured.trim().is_empty() {
+    let path = if configured.trim().is_empty() {
         app_data.to_path_buf()
     } else {
         PathBuf::from(configured).join("runtime")
-    }
+    };
+    dunce::simplified(&path).to_path_buf()
 }
 
 /// Upgrade the previously selected instances folder before any command can
@@ -32,6 +34,15 @@ pub fn initialize(state: &AppState) -> Result<()> {
         };
         apply_settings(state, settings)?;
     } else {
+        // Earlier builds persisted std::fs::canonicalize's verbatim Windows
+        // prefix. Java 17 cannot resolve JARs through those classpath entries.
+        let compatible = dunce::simplified(Path::new(&settings.storage_directory))
+            .to_string_lossy()
+            .into_owned();
+        if compatible != settings.storage_directory {
+            settings.storage_directory = compatible;
+            apply_settings(state, settings.clone())?;
+        }
         std::fs::create_dir_all(instances_root_for(&state.root, &settings)).map_err(err)?;
         std::fs::create_dir_all(runtime_root_for(&state.root, &settings.storage_directory))
             .map_err(err)?;
@@ -126,7 +137,7 @@ pub fn apply_settings(state: &AppState, mut settings: Settings) -> Result<()> {
         }
         std::fs::create_dir_all(&selected)
             .map_err(|e| format!("Impossible de créer le dossier de stockage : {e}"))?;
-        settings.storage_directory = std::fs::canonicalize(selected)
+        settings.storage_directory = dunce::canonicalize(selected)
             .map_err(err)?
             .to_string_lossy()
             .into_owned();
@@ -255,7 +266,7 @@ mod tests {
         }
         state.save().unwrap();
         initialize(&state).unwrap();
-        let selected = std::fs::canonicalize(&old_instances).unwrap();
+        let selected = dunce::canonicalize(&old_instances).unwrap();
         assert_eq!(crate::instances_root(&state), selected.join("instances"));
         assert_eq!(crate::runtime_root(&state), selected.join("runtime"));
         let new_game = selected.join("instances/Mon Pack");
@@ -276,8 +287,8 @@ mod tests {
         let saved: Store =
             serde_json::from_slice(&std::fs::read(state.root.join("state.json")).unwrap()).unwrap();
         assert_eq!(
-            saved.instances[0].icon_path.as_deref(),
-            new_game.join("icon.png").to_str()
+            saved.instances[0].icon_path.as_deref().map(Path::new),
+            Some(new_game.join("icon.png").as_path())
         );
         assert!(saved.settings.instances_directory.is_empty());
         *state.store.lock().unwrap() = saved;
@@ -302,6 +313,46 @@ mod tests {
             .settings
             .storage_directory
             .is_empty());
+        std::fs::remove_dir_all(state.root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_repairs_verbatim_paths_without_relocating_existing_files() {
+        let state = fixture();
+        let selected = state.root.join("Chosen folder");
+        std::fs::create_dir_all(selected.join("runtime/minecraft/versions/1.20.1")).unwrap();
+        std::fs::write(
+            selected.join("runtime/minecraft/versions/1.20.1/client.jar"),
+            b"client",
+        )
+        .unwrap();
+        std::fs::create_dir_all(selected.join("instances/1.20.1/saves")).unwrap();
+        std::fs::write(selected.join("instances/1.20.1/saves/world.dat"), b"world").unwrap();
+        let verbatim = std::fs::canonicalize(&selected).unwrap();
+        state.store.lock().unwrap().settings.storage_directory = verbatim.to_string_lossy().into();
+        state.save().unwrap();
+        initialize(&state).unwrap();
+        let saved: Store =
+            serde_json::from_slice(&std::fs::read(state.root.join("state.json")).unwrap()).unwrap();
+        assert_eq!(
+            saved.settings.storage_directory,
+            dunce::canonicalize(&selected).unwrap().to_string_lossy()
+        );
+        assert!(!crate::runtime_root(&state)
+            .to_string_lossy()
+            .starts_with(r"\\?\"));
+        assert_eq!(
+            std::fs::read(selected.join("instances/1.20.1/saves/world.dat")).unwrap(),
+            b"world"
+        );
+        assert_eq!(
+            std::fs::read(crate::runtime_root(&state).join("minecraft/versions/1.20.1/client.jar"))
+                .unwrap(),
+            b"client"
+        );
+        // Selecting the same directory again must not attempt to copy it onto itself.
+        apply_settings(&state, saved.settings).unwrap();
         std::fs::remove_dir_all(state.root).unwrap();
     }
 

@@ -71,7 +71,7 @@ Tauri manages the data directory and displays it in settings. On macOS:
     └── launcher-game.log       # Game stdout/stderr
 ```
 
-Persistent tokens stay in the system keychain and never in `state.json`. The launcher does not log the Java command line, which contains the session token. Game logs remain local.
+Persistent tokens stay in the system keychain and never in `state.json`. On Windows, large sessions are split across several Credential Manager entries to stay within its per-entry size limit. The launcher does not log the Java command line, which contains the session token. Game logs remain local.
 
 ## Launcher configuration
 

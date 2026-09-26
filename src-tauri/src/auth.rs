@@ -137,10 +137,151 @@ impl Credentials {
         })
     }
     fn save(&self, client: &str) -> Result<()> {
-        entry(client)?
-            .set_password(&serde_json::to_string(self).map_err(err)?)
-            .map_err(|e| format!("Impossible de sécuriser la session dans le trousseau : {e}"))
+        save_credentials(client, &serde_json::to_string(self).map_err(err)?)
     }
+}
+
+// Windows Credential Manager limits a credential blob to 2560 bytes. A cached
+// Minecraft session can be much larger, so commit its pieces before switching
+// the primary credential to a small manifest. The previous value remains usable
+// if writing any piece fails.
+#[cfg(target_os = "windows")]
+const CHUNK_PREFIX: &str = "hxlauncher-chunks-v1:";
+
+#[cfg(target_os = "windows")]
+fn chunk_key(client: &str, generation: &str, index: usize) -> String {
+    format!("{client}:session:{generation}:{index}")
+}
+
+#[cfg(target_os = "windows")]
+fn credential_chunks(value: &str) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    for (index, _) in value.char_indices() {
+        if index - start >= 1000 {
+            chunks.push(&value[start..index]);
+            start = index;
+        }
+    }
+    chunks.push(&value[start..]);
+    chunks
+}
+
+#[cfg(target_os = "windows")]
+fn chunk_manifest(value: &str) -> Result<Option<(String, usize)>> {
+    let Some(rest) = value.strip_prefix(CHUNK_PREFIX) else {
+        return Ok(None);
+    };
+    let (generation, count) = rest
+        .split_once(':')
+        .ok_or("Session enregistrée invalide. Reconnecte-toi.")?;
+    let count: usize = count
+        .parse()
+        .map_err(|_| "Session enregistrée invalide. Reconnecte-toi.")?;
+    if generation.is_empty() || count == 0 || count > 1024 {
+        return Err("Session enregistrée invalide. Reconnecte-toi.".into());
+    }
+    Ok(Some((generation.to_owned(), count)))
+}
+
+fn read_credentials(client: &str) -> Result<Option<String>> {
+    match entry(client)?.get_password() {
+        Ok(value) => {
+            #[cfg(target_os = "windows")]
+            if let Some((generation, count)) = chunk_manifest(&value)? {
+                let mut joined = String::new();
+                for index in 0..count {
+                    joined.push_str(
+                        &entry(&chunk_key(client, &generation, index))?
+                            .get_password()
+                            .map_err(|_| "Session enregistrée incomplète. Reconnecte-toi.")?,
+                    );
+                }
+                return Ok(Some(joined));
+            }
+            Ok(Some(value))
+        }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Trousseau inaccessible : {e}")),
+    }
+}
+
+fn save_credentials(client: &str, value: &str) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let generation = format!(
+            "{}-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        let chunks = credential_chunks(value);
+        if chunks.len() > 1024 {
+            return Err("Session trop volumineuse pour le stockage sécurisé.".into());
+        }
+        let old = match entry(client)?.get_password() {
+            Ok(value) => chunk_manifest(&value)?,
+            Err(keyring::Error::NoEntry) => None,
+            Err(e) => return Err(format!("Trousseau inaccessible : {e}")),
+        };
+        for (index, chunk) in chunks.iter().enumerate() {
+            if let Err(e) = entry(&chunk_key(client, &generation, index))?.set_password(chunk) {
+                for written in 0..index {
+                    let _ = entry(&chunk_key(client, &generation, written))?.delete_credential();
+                }
+                return Err(format!(
+                    "Impossible de sécuriser la session dans le trousseau : {e}"
+                ));
+            }
+        }
+        let manifest = format!("{CHUNK_PREFIX}{generation}:{}", chunks.len());
+        if let Err(e) = entry(client)?.set_password(&manifest) {
+            for index in 0..chunks.len() {
+                let _ = entry(&chunk_key(client, &generation, index))?.delete_credential();
+            }
+            return Err(format!(
+                "Impossible de sécuriser la session dans le trousseau : {e}"
+            ));
+        }
+        if let Some((old_generation, count)) = old {
+            for index in 0..count {
+                let _ = entry(&chunk_key(client, &old_generation, index))?.delete_credential();
+            }
+        }
+        return Ok(());
+    }
+    #[cfg(not(target_os = "windows"))]
+    entry(client)?
+        .set_password(value)
+        .map_err(|e| format!("Impossible de sécuriser la session dans le trousseau : {e}"))
+}
+
+fn delete_credentials(client: &str) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    let old = match entry(client)?.get_password() {
+        Ok(value) => chunk_manifest(&value)?,
+        Err(keyring::Error::NoEntry) => None,
+        Err(e) => return Err(format!("Trousseau inaccessible : {e}")),
+    };
+    match entry(client)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(e) => return Err(err(e)),
+    }
+    #[cfg(target_os = "windows")]
+    if let Some((generation, count)) = old {
+        for index in 0..count {
+            match entry(&chunk_key(client, &generation, index))?.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(e) => return Err(err(e)),
+            }
+        }
+    }
+    Ok(())
 }
 fn now_seconds() -> u64 {
     std::time::SystemTime::now()
@@ -277,10 +418,9 @@ pub async fn refresh(state: &AppState) -> Result<Option<Session>> {
     if client.is_empty() {
         return Ok(None);
     }
-    let refresh = match entry(&client)?.get_password() {
-        Ok(t) => t,
-        Err(keyring::Error::NoEntry) => return Ok(None),
-        Err(e) => return Err(format!("Trousseau inaccessible : {e}")),
+    let refresh = match read_credentials(&client)? {
+        Some(value) => value,
+        None => return Ok(None),
     };
     let mut credentials = Credentials::decode(refresh);
     if let Some(session) = &credentials.session {
@@ -332,10 +472,7 @@ pub async fn logout(state: tauri::State<'_, AppState>) -> Result<()> {
     }
     let client = crate::microsoft_client_id();
     if !client.is_empty() {
-        match entry(&client)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(e) => return Err(err(e)),
-        }
+        delete_credentials(&client)?;
     }
     *state.session.lock().map_err(err)? = None;
     Ok(())
@@ -398,6 +535,54 @@ fn texture_url(source: &str) -> Result<reqwest::Url> {
 #[cfg(test)]
 mod skin_tests {
     use super::*;
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_credentials_round_trip_beyond_blob_limit() {
+        let client = format!(
+            "storage-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let first = format!("{{\"refresh_token\":\"{}\"}}", "abcé".repeat(1200));
+        let second = format!("{{\"refresh_token\":\"{}\"}}", "updated".repeat(900));
+        assert!(first.len() > 2560);
+        assert!(credential_chunks(&first)
+            .iter()
+            .all(|chunk| chunk.encode_utf16().count() * 2 <= 2560));
+        entry(&client)
+            .unwrap()
+            .set_password("legacy-refresh-token")
+            .unwrap();
+        assert_eq!(
+            read_credentials(&client).unwrap().as_deref(),
+            Some("legacy-refresh-token")
+        );
+        save_credentials(&client, &first).unwrap();
+        assert_eq!(
+            read_credentials(&client).unwrap().as_deref(),
+            Some(first.as_str())
+        );
+        let first_manifest = entry(&client).unwrap().get_password().unwrap();
+        let (first_generation, first_count) = chunk_manifest(&first_manifest).unwrap().unwrap();
+        save_credentials(&client, &second).unwrap();
+        assert_eq!(
+            read_credentials(&client).unwrap().as_deref(),
+            Some(second.as_str())
+        );
+        for index in 0..first_count {
+            assert!(matches!(
+                entry(&chunk_key(&client, &first_generation, index))
+                    .unwrap()
+                    .get_password(),
+                Err(keyring::Error::NoEntry)
+            ));
+        }
+        delete_credentials(&client).unwrap();
+        assert!(read_credentials(&client).unwrap().is_none());
+    }
     #[test]
     fn cached_session_requires_unexpired_token_with_refresh_margin() {
         let mut session = Session {

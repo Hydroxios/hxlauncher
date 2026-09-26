@@ -870,18 +870,12 @@ export default function App() {
         </button>
       </footer>
       {modal && (
-        <div
-          className="modal-backdrop"
-          onClick={() => {
-            if (!working) void closeModal();
-          }}
-        >
+        <div className="modal-backdrop">
           <section
             className="modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="modal-title"
-            onClick={(e) => e.stopPropagation()}
           >
             <button
               className="modal-close"

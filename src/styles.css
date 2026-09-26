@@ -1366,9 +1366,9 @@ main {
   color: #ece9f3;
   color-scheme: dark;
   background:
-    radial-gradient(ellipse at 85% 36%, #287fc9db, transparent 55%),
-    radial-gradient(ellipse at 3% 2%, #c24c91d4, transparent 53%),
-    radial-gradient(ellipse at 25% 100%, #bd8249c9, transparent 62%), #171724;
+    radial-gradient(ellipse at 85% 36%, #254f7eaa, transparent 55%),
+    radial-gradient(ellipse at 3% 2%, #6e315b99, transparent 53%),
+    radial-gradient(ellipse at 25% 100%, #634c34aa, transparent 62%), #171724;
 }
 .dark .brand,
 .dark .home h1,
@@ -1377,6 +1377,7 @@ main {
 }
 .dark .brand > span,
 .dark .eyebrow,
+.dark .home-copy > p,
 .dark .page-heading > p,
 .dark .field,
 .dark .import-panel p,
@@ -1384,10 +1385,10 @@ main {
 .dark .pack-result p,
 .dark nav button,
 .dark .account {
-  color: #b9b1c6;
+  color: #d4ccdf;
 }
 .dark .toolbar-action {
-  color: #b9b1c6;
+  color: #d4ccdf;
   background: #252538aa;
   border-color: #ffffff22;
 }
@@ -1419,7 +1420,53 @@ main {
 }
 .dark .empty-state p,
 .dark .modpack-item p {
-  color: #b9b1c6;
+  color: #d4ccdf;
+}
+.dark .home h1 em {
+  color: #f0b9df;
+}
+.dark .instance-picker span,
+.dark .player-caption small,
+.dark .logs time {
+  color: #c5bbd2;
+}
+.dark .instance-picker strong,
+.dark .instance-picker select,
+.dark .player-caption,
+.dark .field > strong,
+.dark .field small,
+.dark .logs p,
+.dark .inline-progress,
+.dark details,
+.dark .storage p {
+  color: #e0d9e9;
+}
+.dark .instance-picker > svg,
+.dark .instance-picker > .instance-picker-icon,
+.dark .instance-icon,
+.dark .empty-state,
+.dark .import-panel > svg,
+.dark .player-loader {
+  color: #d3c3df;
+}
+.dark .icon-button,
+.dark .input-button button,
+.dark .large-icon,
+.dark .device-code,
+.dark .device-code .copy-code {
+  color: #e8e1ee;
+  background: #ffffff1c;
+}
+.dark .danger-button {
+  color: #ffd0dd;
+  background: #6c374d66;
+}
+.dark .button.primary {
+  color: #fff;
+  background: #59638d;
+}
+.dark .button.primary:hover {
+  background: #6874a2;
 }
 .dark .tag {
   background: #55bfa553;
@@ -1447,6 +1494,9 @@ main {
 .dark .field input:not([type="range"]):focus,
 .dark .field select:focus {
   border-color: #b58bb8;
+}
+.dark .field input::placeholder {
+  color: #bbb1c9;
 }
 .dark .button.secondary,
 .dark .subtle-link {
@@ -1489,10 +1539,14 @@ main {
 .dark .modal-note,
 .dark .verification-url,
 .dark .login-wait {
-  color: #bbb2c4;
+  color: #d4ccdf;
+}
+.dark .modal-close,
+.dark .device-code button {
+  color: #e0d4e9;
 }
 .dark footer {
-  color: #aaa0b2;
+  color: #d4ccdf;
 }
 .app-shell .glass,
 .app-shell nav,

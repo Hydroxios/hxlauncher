@@ -364,7 +364,7 @@ async fn install_contents(
         .map_err(err)??;
     let has_icon = extract_icon(&stage.join("pack.zip"), &game)?;
     let profile_id = crate::modded::install(
-        state.root.join("modded-runtime"),
+        crate::runtime_root(state).join("modded-runtime"),
         plan.minecraft.clone(),
         plan.loader.clone(),
         app.clone(),

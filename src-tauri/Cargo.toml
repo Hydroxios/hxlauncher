@@ -7,6 +7,9 @@ edition = "2021"
 [lib]
 name = "hxlauncher_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
 [build-dependencies]
 dotenvy = "0.15"
 tauri-build = { version = "2", features = [] }

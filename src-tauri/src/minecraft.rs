@@ -306,7 +306,7 @@ async fn launch(id: &str, app: &tauri::AppHandle, state: &AppState) -> Result<()
         .ok_or("Version introuvable chez Mojang.")?;
     let game = crate::instances::directory(state, id)?;
     tokio::fs::create_dir_all(&game).await.map_err(err)?;
-    let shared = state.root.join("minecraft");
+    let shared = crate::runtime_root(state).join("minecraft");
     let version_dir = safe_path(&shared.join("versions"), &instance.version)?;
     let metadata_path = version_dir.join("version.json");
     download(
@@ -485,7 +485,7 @@ async fn launch(id: &str, app: &tauri::AppHandle, state: &AppState) -> Result<()
     args.extend(arguments(&meta["arguments"]["game"], &vars)?);
     // Never write the command line or the access token to launcher logs.
     let log = std::fs::File::create(game.join("launcher-game.log")).map_err(err)?;
-    let mut child = tokio::process::Command::new(java)
+    let mut child = crate::runtime::command(java)
         .args(args)
         .current_dir(&game)
         .stdin(Stdio::null())

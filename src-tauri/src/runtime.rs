@@ -10,6 +10,16 @@ use std::path::{Component, Path, PathBuf};
 
 const MANIFEST: &str = "https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json";
 
+/// Keep Java's redirected stdout/stderr without creating a Windows console.
+/// CREATE_NO_WINDOW does not hide Minecraft's own graphical window.
+pub fn command(executable: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(executable);
+    command.stdin(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    command
+}
+
 fn platform() -> Result<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Ok("mac-os-arm64"),

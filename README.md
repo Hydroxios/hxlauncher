@@ -56,20 +56,17 @@ Examples: Java 17 for Minecraft 1.20.1; Java 21 for 1.20.5 / 1.21. Later version
 
 ## Data
 
-Tauri manages the data directory and displays it in settings. On macOS:
+The folder selected in settings contains both instances and shared game files:
 
 ```text
-~/Library/Application Support/dev.hydro.hxlauncher/
-├── state.json                  # Non-secret settings and instances
-├── minecraft/
-│   ├── versions/               # Minecraft manifests and client
-│   ├── libraries/
-│   └── assets/
-└── instances/<id>/             # Isolated game directory
-    ├── natives/
-    ├── saves/                  # Created by Minecraft
-    └── launcher-game.log       # Game stdout/stderr
+<selected folder>/
+├── instances/<name>/           # Worlds, mods, configs and game logs
+└── runtime/
+    ├── minecraft/              # Vanilla versions, libraries, assets and Java
+    └── modded-runtime/         # Modded versions, libraries, assets and Java
 ```
+
+On startup, the launcher automatically upgrades the previously selected instances folder to this layout. Without a selected folder, it creates this layout in the application data directory. Migration copies existing instances and shared game files, updates saved icon paths, then removes the old copies after saving the new setting when cleanup succeeds. Non-secret settings remain in the Tauri application data directory as `state.json`.
 
 Persistent tokens stay in the system keychain and never in `state.json`. On Windows, large sessions are split across several Credential Manager entries to stay within its per-entry size limit. The launcher does not log the Java command line, which contains the session token. Game logs remain local.
 
@@ -90,7 +87,7 @@ Process environment variables take priority. The Rust build loads `.env` and emb
 
 **Modpacks → Choose a ZIP → Install.** The import follows the exact versions from the manifest, downloads files through the official API, and verifies their SHA-1. Mods go to `mods`, resource packs to `resourcepacks`, and shaders to `shaderpacks`. Configurations are extracted into a temporary directory; the instance appears on the home screen only after the full installation succeeds.
 
-Fabric, Quilt, Forge, and NeoForge are installed through `mc-launcher-core` 0.1.2 and official sources. Forge/NeoForge installers use the configured Java runtime, write to `modded-runtime/loader-install.log`, and have a 15-minute maximum duration. The shared runtime and game directories are separated. A Minecraft license and Microsoft sign-in are required to play, not to install.
+Fabric, Quilt, Forge, and NeoForge are installed through `mc-launcher-core` 0.1.2 and official sources. Forge/NeoForge installers use the configured Java runtime, write to `runtime/modded-runtime/loader-install.log` in the selected folder, and have a 15-minute maximum duration. The shared runtime and game directories are separated. A Minecraft license and Microsoft sign-in are required to play, not to install.
 
 Missing keys, author-blocked downloads, missing hashes, and duplicate files stop the import with an explicit error. No referenced mod is silently skipped, including optional files. On failure, temporary files are cleaned up and no incomplete instance is published. Already-downloaded Minecraft resources remain cached for a retry. Mod resume and installation cancellation are not available yet.
 

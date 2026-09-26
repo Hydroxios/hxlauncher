@@ -1,4 +1,8 @@
-export type Settings = { memoryMb: number; instancesDirectory: string };
+export type Settings = {
+  memoryMb: number;
+  storageDirectory: string;
+  instancesDirectory?: string;
+};
 
 export type Instance = {
   id: string;

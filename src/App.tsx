@@ -44,7 +44,7 @@ import { call, desktop, getErrorMessage } from "./lib/tauri";
 import { usePageNavigation } from "./hooks/usePageNavigation";
 import { useToast } from "./hooks/useToast";
 
-const defaults: Settings = { memoryMb: 4096, instancesDirectory: "" };
+const defaults: Settings = { memoryMb: 4096, storageDirectory: "" };
 const previewProfile: Profile = {
   id: "preview-hydroxios",
   name: "Hydroxios",
@@ -63,6 +63,19 @@ function MicrosoftLogo() {
       <i />
       <i />
     </span>
+  );
+}
+function AccountAvatar({ name }: { name: string }) {
+  const [failed, setFailed] = useState(false);
+  return failed ? (
+    <UserRound size={16} />
+  ) : (
+    <img
+      className="account-avatar"
+      src={`https://mc-heads.net/avatar/${encodeURIComponent(name)}/32`}
+      alt={`Avatar de ${name}`}
+      onError={() => setFailed(true)}
+    />
   );
 }
 function InstanceIcon({ instance }: { instance: Instance }) {
@@ -120,7 +133,7 @@ export default function App() {
     if (
       !settingsReady ||
       (next.memoryMb === settings.memoryMb &&
-        next.instancesDirectory === settings.instancesDirectory)
+        next.storageDirectory === settings.storageDirectory)
     )
       return;
     setSettings(next);
@@ -190,12 +203,23 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (!desktop || !pendingSettings) return;
+    let cancelled = false;
     const timeout = window.setTimeout(() => {
-      void call("save_settings", { settings: pendingSettings }).catch((e) =>
-        notify(message(e), true),
-      );
+      void call("save_settings", { settings: pendingSettings }).catch(async (e) => {
+        if (cancelled) return;
+        notify(message(e), true);
+        try {
+          const saved = await call<Store>("get_store");
+          if (!cancelled) setSettings(saved.settings);
+        } catch (reloadError) {
+          if (!cancelled) notify(message(reloadError), true);
+        }
+      });
     }, 250);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
   }, [pendingSettings]);
   useEffect(() => {
     if (!device || modal !== "login") return;
@@ -350,7 +374,7 @@ export default function App() {
       setWorking(false);
     }
   }
-  async function chooseInstancesDirectory() {
+  async function chooseStorageDirectory() {
     if (!desktop) {
       notify(
         "La sélection du dossier est disponible dans l’application Tauri.",
@@ -361,7 +385,7 @@ export default function App() {
     try {
       const path = await open({ directory: true, multiple: false });
       if (typeof path === "string") {
-        updateSettings({ ...settings, instancesDirectory: path });
+        updateSettings({ ...settings, storageDirectory: path });
       }
     } catch (e) {
       notify(message(e), true);
@@ -467,11 +491,7 @@ export default function App() {
             onClick={() => (profile ? setPage("settings") : void startLogin())}
           >
             {profile ? (
-              <img
-                className="account-avatar"
-                src={`https://mc-heads.net/avatar/${encodeURIComponent(profile.name)}/32`}
-                alt={`Avatar de ${profile.name}`}
-              />
+              <AccountAvatar key={profile.name} name={profile.name} />
             ) : (
               <UserRound size={16} />
             )}
@@ -745,11 +765,13 @@ export default function App() {
               </div>
               <div className="settings-grid">
                 <label className="field">
-                  Dossier des instances
+                  Dossier de stockage
                   <div className="input-button">
                     <input
                       value={
-                        settings.instancesDirectory || directory + "/instances"
+                        settings.storageDirectory ||
+                        settings.instancesDirectory ||
+                        directory
                       }
                       readOnly
                       aria-describedby="instances-directory-help"
@@ -759,13 +781,15 @@ export default function App() {
                       disabled={
                         busy || working || restoringSession || !settingsReady
                       }
-                      onClick={() => void chooseInstancesDirectory()}
+                      onClick={() => void chooseStorageDirectory()}
                     >
                       Choisir
                     </button>
                   </div>
                   <small id="instances-directory-help">
-                    Les nouveaux mondes et modpacks seront installés ici.
+                    {settings.instancesDirectory && !settings.storageDirectory
+                      ? "Ancien dossier des instances. Choisis un dossier pour regrouper les instances et le runtime."
+                      : "Contient instances/ (mondes et modpacks) et runtime/ (Java, assets et bibliothèques)."}
                   </small>
                 </label>
                 <label className="field">

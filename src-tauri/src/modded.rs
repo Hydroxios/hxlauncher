@@ -153,7 +153,7 @@ pub async fn install(
             let log = std::fs::File::create(&log_path).map_err(err)?;
             let status = tokio::time::timeout(
                 Duration::from_secs(900),
-                tokio::process::Command::new(&java)
+                crate::runtime::command(&java)
                     .arg("-jar")
                     .arg(&jar)
                     .arg("--installClient")
@@ -198,7 +198,7 @@ pub async fn launch(
         .await?
         .ok_or("Connecte-toi avec Microsoft avant de jouer.")?;
     let game = crate::instances::directory(state, &instance.id)?;
-    let root = state.root.join("modded-runtime");
+    let root = crate::runtime_root(state).join("modded-runtime");
     let id = instance.profile_id.ok_or("Profil absent.")?;
     identifier(&id)?;
     let version_for_java = {
@@ -244,7 +244,7 @@ pub async fn launch(
     let cmd = command;
     let log_path = cmd.working_dir.join("launcher-game.log");
     let log = std::fs::File::create(&log_path).map_err(err)?;
-    let mut child = tokio::process::Command::new(cmd.executable)
+    let mut child = crate::runtime::command(cmd.executable)
         .arg("-Xms512M")
         .arg(format!("-Xmx{}M", settings.memory_mb))
         .args(cmd.args)

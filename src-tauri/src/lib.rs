@@ -4,6 +4,7 @@ mod minecraft;
 mod modded;
 mod packs;
 mod runtime;
+mod storage;
 pub fn microsoft_client_id() -> String {
     std::env::var("MICROSOFT_CLIENT_ID")
         .ok()
@@ -25,12 +26,16 @@ pub fn err(e: impl std::fmt::Display) -> String {
 pub struct Settings {
     pub memory_mb: u32,
     #[serde(default)]
+    pub storage_directory: String,
+    // Kept only to find instances created before storage_directory existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub instances_directory: String,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
             memory_mb: 4096,
+            storage_directory: String::new(),
             instances_directory: String::new(),
         }
     }
@@ -70,17 +75,22 @@ pub struct AppState {
     pub busy: tokio::sync::Mutex<()>,
 }
 pub fn instances_root(state: &AppState) -> PathBuf {
+    let settings = state
+        .store
+        .lock()
+        .ok()
+        .map(|store| store.settings.clone())
+        .unwrap_or_default();
+    storage::instances_root_for(&state.root, &settings)
+}
+pub fn runtime_root(state: &AppState) -> PathBuf {
     let configured = state
         .store
         .lock()
         .ok()
-        .map(|store| store.settings.instances_directory.clone())
+        .map(|store| store.settings.storage_directory.clone())
         .unwrap_or_default();
-    if configured.trim().is_empty() {
-        state.root.join("instances")
-    } else {
-        PathBuf::from(configured)
-    }
+    storage::runtime_root_for(&state.root, &configured)
 }
 impl AppState {
     pub fn save(&self) -> Result<()> {
@@ -129,7 +139,11 @@ fn system_memory() -> MemoryInfo {
     MemoryInfo { total_mb }
 }
 #[tauri::command]
-fn save_settings(settings: Settings, state: tauri::State<AppState>) -> Result<()> {
+async fn save_settings(
+    settings: Settings,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<()> {
     let _guard = state
         .busy
         .try_lock()
@@ -137,12 +151,12 @@ fn save_settings(settings: Settings, state: tauri::State<AppState>) -> Result<()
     if !(1024..=32768).contains(&settings.memory_mb) {
         return Err("Mémoire : entre 1 et 32 Go.".into());
     }
-    if !settings.instances_directory.trim().is_empty() {
-        std::fs::create_dir_all(&settings.instances_directory)
-            .map_err(|e| format!("Impossible de créer le dossier des instances : {e}"))?;
-    }
-    state.store.lock().map_err(err)?.settings = settings;
-    state.save()
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        storage::apply_settings(&state, settings)
+    })
+    .await
+    .map_err(err)?
 }
 #[tauri::command]
 async fn create_instance(
@@ -282,13 +296,15 @@ pub fn run() {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Store::default(),
                 Err(e) => return Err(e.into()),
             };
-            app.manage(AppState {
+            let state = AppState {
                 root,
                 store: Mutex::new(store),
                 session: Mutex::new(None),
                 pending: Mutex::new(None),
                 busy: tokio::sync::Mutex::new(()),
-            });
+            };
+            storage::initialize(&state).map_err(std::io::Error::other)?;
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

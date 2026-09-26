@@ -810,7 +810,7 @@ export default function App() {
                   />
                   <small>
                     {memoryInfo
-                      ? `${memoryInfo.totalMb / 1024} Go de mémoire totale détectée.`
+                      ? `${Math.round(memoryInfo.totalMb / 1024)} Go de mémoire totale détectée.`
                       : "Détection de la mémoire totale…"}
                   </small>
                 </label>

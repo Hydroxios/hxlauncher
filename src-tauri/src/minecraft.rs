@@ -273,7 +273,7 @@ pub async fn launch_instance(
     result
 }
 async fn launch(id: &str, app: &tauri::AppHandle, state: &AppState) -> Result<()> {
-    let (instance, settings) = {
+    let (mut instance, settings) = {
         let s = state.store.lock().map_err(err)?;
         (
             s.instances
@@ -288,9 +288,34 @@ async fn launch(id: &str, app: &tauri::AppHandle, state: &AppState) -> Result<()
         return crate::modded::launch(instance, settings, app, state).await;
     }
     if instance.loader != "Vanilla" {
-        return Err(
-            "L’installation des modloaders sera ajoutée dans une prochaine version.".into(),
-        );
+        progress(app, "prepare", "Vérification du compte…", 0, 0);
+        auth::refresh(state)
+            .await?
+            .ok_or("Connecte-toi avec Microsoft avant de jouer.")?;
+        let game = crate::instances::directory(state, id)?;
+        tokio::fs::create_dir_all(game.join("mods"))
+            .await
+            .map_err(err)?;
+        let profile_id = crate::modded::install(
+            crate::runtime_root(state).join("modded-runtime"),
+            instance.version.clone(),
+            instance.loader.clone(),
+            app.clone(),
+        )
+        .await?;
+        {
+            let mut store = state.store.lock().map_err(err)?;
+            let saved = store
+                .instances
+                .iter_mut()
+                .find(|i| i.id == id)
+                .ok_or("Instance introuvable.")?;
+            saved.profile_id = Some(profile_id.clone());
+            saved.status = "Installé".into();
+        }
+        state.save()?;
+        instance.profile_id = Some(profile_id);
+        return crate::modded::launch(instance, settings, app, state).await;
     }
     progress(app, "prepare", "Vérification du compte…", 0, 0);
     let session = auth::refresh(state)

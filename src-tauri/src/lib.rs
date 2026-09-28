@@ -1,5 +1,6 @@
 mod auth;
 mod instances;
+mod loaders;
 mod minecraft;
 mod modded;
 mod packs;
@@ -162,6 +163,7 @@ async fn save_settings(
 async fn create_instance(
     name: String,
     version: String,
+    loader: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Instance> {
     let _guard = state
@@ -174,6 +176,8 @@ async fn create_instance(
     if !minecraft::versions().await?.iter().any(|v| v.id == version) {
         return Err("Version Minecraft inconnue.".into());
     }
+    let loader = loader.unwrap_or_else(|| "Vanilla".into());
+    loaders::validate_spec(&version, &loader).await?;
     let id = format!(
         "instance-{}",
         std::time::SystemTime::now()
@@ -186,7 +190,7 @@ async fn create_instance(
         id,
         name: name.trim().into(),
         version,
-        loader: "Vanilla".into(),
+        loader,
         status: "À installer".into(),
         mod_count: 0,
         icon_path: None,
@@ -322,6 +326,7 @@ pub fn run() {
             auth::logout,
             auth::cancel_login,
             minecraft::list_versions,
+            loaders::list_loader_versions,
             minecraft::launch_instance,
             packs::inspect_modpack,
             packs::install_modpack

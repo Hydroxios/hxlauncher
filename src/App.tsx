@@ -108,6 +108,15 @@ export default function App() {
   const [loginBusy, setLoginBusy] = useState(false);
   const [versions, setVersions] = useState<{ id: string }[]>([]);
   const [version, setVersion] = useState("");
+  const [loader, setLoader] = useState("Vanilla");
+  const [loaderVersion, setLoaderVersion] = useState("");
+  const [loaderRetry, setLoaderRetry] = useState(0);
+  const [loaderCatalogue, setLoaderCatalogue] = useState<{
+    minecraft: string;
+    loader: string;
+    versions: string[];
+    error?: string;
+  } | null>(null);
   const [name, setName] = useState("Mon monde");
   const [busy, setBusy] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -124,6 +133,12 @@ export default function App() {
   const chosen =
     store.instances.find((i) => i.id === selected) ?? store.instances[0];
   const modpacks = store.instances;
+  const currentLoaders =
+    loaderCatalogue?.minecraft === version && loaderCatalogue.loader === loader
+      ? loaderCatalogue
+      : null;
+  const loaderReady =
+    loader === "Vanilla" || !!currentLoaders?.versions.includes(loaderVersion);
   const notify = showToast;
   const log = (text: string) => {
     const entry = { time: new Date().toLocaleTimeString("fr-FR"), text };
@@ -222,6 +237,30 @@ export default function App() {
     };
   }, [pendingSettings]);
   useEffect(() => {
+    if (modal !== "create" || !version || loader === "Vanilla") return;
+    let cancelled = false;
+    setLoaderCatalogue(null);
+    setLoaderVersion("");
+    void call<string[]>("list_loader_versions", { minecraft: version, loader })
+      .then((versions) => {
+        if (cancelled) return;
+        setLoaderCatalogue({ minecraft: version, loader, versions });
+        setLoaderVersion(versions[0] ?? "");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setLoaderCatalogue({
+          minecraft: version,
+          loader,
+          versions: [],
+          error: message(error),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modal, version, loader, loaderRetry]);
+  useEffect(() => {
     if (!device || modal !== "login") return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -284,14 +323,23 @@ export default function App() {
     }
   }
   async function create() {
+    if (working || !version || !name.trim() || !loaderReady) return;
     setWorking(true);
     try {
-      const i = await call<Instance>("create_instance", { name, version });
+      const i = await call<Instance>("create_instance", {
+        name,
+        version,
+        loader: loader === "Vanilla" ? loader : `${loader}-${loaderVersion}`,
+      });
       await reload();
       setSelected(i.id);
       setModal(null);
-      notify("Instance créée. Le premier lancement téléchargera Minecraft.");
-      log(`Instance créée : ${i.name} (${i.version}).`);
+      notify(
+        loader === "Vanilla"
+          ? "Instance créée. Le premier lancement téléchargera Minecraft."
+          : "Instance créée. Minecraft et le modloader seront installés au premier lancement.",
+      );
+      log(`Instance créée : ${i.name} (${i.version} · ${i.loader}).`);
     } catch (e) {
       notify(message(e), true);
     } finally {
@@ -896,6 +944,7 @@ export default function App() {
                   <input
                     autoFocus
                     value={name}
+                    disabled={working}
                     maxLength={80}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Mon monde"
@@ -905,7 +954,11 @@ export default function App() {
                   Version Minecraft
                   <select
                     value={version}
-                    onChange={(e) => setVersion(e.target.value)}
+                    onChange={(e) => {
+                      setVersion(e.target.value);
+                      setLoaderVersion("");
+                      setLoaderCatalogue(null);
+                    }}
                     disabled={working}
                   >
                     {!versions.length && (
@@ -924,13 +977,79 @@ export default function App() {
                     Mojang.
                   </small>
                 </label>
+                <label className="field">
+                  Modloader
+                  <select
+                    value={loader}
+                    disabled={working}
+                    onChange={(e) => {
+                      setLoader(e.target.value);
+                      setLoaderVersion("");
+                      setLoaderCatalogue(null);
+                    }}
+                  >
+                    <option value="Vanilla">Vanilla — sans mods</option>
+                    <option value="fabric">Fabric</option>
+                    <option value="quilt">Quilt</option>
+                    <option value="forge">Forge</option>
+                    <option value="neoforge">NeoForge</option>
+                  </select>
+                </label>
+                {loader !== "Vanilla" && (
+                  <>
+                    <label className="field">
+                      Version du modloader
+                      <select
+                        value={loaderVersion}
+                        disabled={working || !currentLoaders?.versions.length}
+                        onChange={(e) => setLoaderVersion(e.target.value)}
+                        aria-describedby="loader-status"
+                      >
+                        {!currentLoaders?.versions.length && (
+                          <option value="">
+                            {!version
+                              ? "Choisis une version Minecraft"
+                              : !currentLoaders
+                                ? "Chargement des versions…"
+                                : currentLoaders.error
+                                  ? "Versions indisponibles"
+                                  : "Aucune version compatible"}
+                          </option>
+                        )}
+                        {currentLoaders?.versions.map((v) => (
+                          <option key={v} value={v}>
+                            {v}
+                          </option>
+                        ))}
+                      </select>
+                      <small id="loader-status" role="status">
+                        {currentLoaders?.error
+                          ? `Impossible de récupérer les versions : ${currentLoaders.error}`
+                          : currentLoaders && !currentLoaders.versions.length
+                            ? "Ce modloader n’est pas disponible pour cette version de Minecraft. Choisis une autre version ou un autre modloader."
+                            : "Versions compatibles issues du catalogue officiel. Les versions stables sont proposées en premier."}
+                      </small>
+                    </label>
+                    {currentLoaders?.error && (
+                      <button
+                        className="button secondary full"
+                        disabled={working}
+                        onClick={() => setLoaderRetry((retry) => retry + 1)}
+                      >
+                        Réessayer
+                      </button>
+                    )}
+                  </>
+                )}
                 <div className="modal-note">
                   <ArrowDownToLine size={17} />
-                  Minecraft sera téléchargé au premier lancement.
+                  {loader === "Vanilla"
+                    ? "Minecraft sera téléchargé au premier lancement."
+                    : "Minecraft et le modloader seront installés au premier lancement. Tu pourras ensuite ajouter tes mods dans le dossier mods de l’instance."}
                 </div>
                 <button
                   className="button primary full"
-                  disabled={working || !version || !name.trim()}
+                  disabled={working || !version || !name.trim() || !loaderReady}
                   onClick={() => void create()}
                 >
                   {working ? (

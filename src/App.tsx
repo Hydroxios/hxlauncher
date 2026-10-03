@@ -24,9 +24,11 @@ import {
   Layers3,
   Terminal,
   Trash2,
+  Shirt,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import Player, { type PlayerProfile } from "./Player";
+import SkinEditor from "./skin/SkinEditor";
 type Profile = PlayerProfile;
 type MemoryInfo = {
   totalMb: number;
@@ -54,6 +56,7 @@ const message = getErrorMessage;
 const navigationItems = [
   { id: "library", label: "Accueil", icon: Home },
   { id: "packs", label: "Instances", icon: Layers3 },
+  { id: "skins", label: "Skin", icon: Shirt },
 ] as const;
 function MicrosoftLogo() {
   return (
@@ -653,12 +656,7 @@ export default function App() {
                 <ArrowRight size={13} />
               </button>
             </div>
-            <Player
-              profile={profile}
-              onEditSkin={() =>
-                notify("L’édition du skin sera bientôt disponible.")
-              }
-            />
+            <Player profile={profile} onEditSkin={() => setPage("skins")} />
           </section>
         )}
         {page === "packs" && (
@@ -777,6 +775,15 @@ export default function App() {
               )}
             </div>
           </section>
+        )}
+        {page === "skins" && (
+          <SkinEditor
+            profile={profile}
+            onProfileChange={setProfile}
+            onRequireLogin={() => void startLogin()}
+            notify={notify}
+            log={log}
+          />
         )}
         {page === "settings" && (
           <section className="simple-page settings-page">

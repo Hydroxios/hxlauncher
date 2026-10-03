@@ -30,6 +30,7 @@ npm run tauri build -- --debug --bundles app  # Development macOS .app
 - Mojang stable versions from Minecraft 1.19 onward; instance creation and Java/RAM settings.
 - Client, library, and asset downloads from Mojang manifests, SHA-1 verification, shared cache, and 12 concurrent asset downloads.
 - JVM/game argument construction, platform rules, Java launch, and process tracking. Legacy native formats incompatible with ARM are rejected explicitly.
+- **Skin editor**: pixel painting on the 64 × 64 texture with a live 3D preview, local skin library, PNG import/export, classic/slim models, cape selection, and upload to the Minecraft account.
 - Local **CurseForge ZIP** inspection: manifest v1, Minecraft version, primary modloader, `projectID` / `fileID` references, and override count. Path traversal, symbolic links, and oversized archives are rejected.
 
 ## Microsoft setup
@@ -95,11 +96,13 @@ Missing keys, author-blocked downloads, missing hashes, and duplicate files stop
 
 - `src/App.tsx`: library, account, import, settings, and activity.
 - `src/Player.tsx`: animated 3D character with `skinview3d`, classic/slim models, and WebGL lifecycle handling.
+- `src/skin/`: skin editor page, paint canvas, 3D preview, and texture helpers (face layout, fill, legacy 64 × 32 conversion).
 - `public/skins/steve.png`: Steve texture extracted from the official Mojang 1.21.1 client (Minecraft asset owned by Mojang/Microsoft).
 - `src-tauri/src/auth.rs`: authentication libraries and keychain integration.
 - `src-tauri/src/minecraft.rs`: manifests, downloads, rules, and launching.
 - `src-tauri/src/packs.rs`: archive checks, CurseForge API, and instance publication.
 - `src-tauri/src/modded.rs`: modloader installation and modpack launching.
+- `src-tauri/src/skins.rs`: skin and cape changes through Minecraft Services, and the local skin library.
 - `src-tauri/src/lib.rs`: Tauri commands and persistence.
 
 ## Validation and limitations
@@ -113,5 +116,7 @@ Not yet supported: automatic Java installation, snapshots and older versions, in
 The window uses a custom drag bar and custom minimize/maximize/close controls. Its pink, blue, and sand background uses translucent panels. The native window is opaque to avoid composition glitches; panel transparency remains an internal interface effect.
 
 The home screen uses `skinview3d`: idle animation, mouse rotation, rendering paused when the page is hidden, and reduced-motion support. Steve is available locally without a connection. After sign-in, the active Minecraft profile skin is downloaded by Rust only from `https://textures.minecraft.net`, without sending a token to that server; classic/slim variants are preserved. If loading fails, Steve remains visible with an explicit status. Showing a real account skin requires a connected account.
+
+The pencil button on the character, or the **Skin** tab, opens the editor. Tools: pencil (B), eraser (E), fill bounded to the current cube face (G), and color picker (I, right click, or Alt). ⌘Z / Ctrl+Z undoes, ⇧⌘Z / Ctrl+Y redoes, and X toggles the grid. The work in progress is kept as a draft in the webview between pages. Saved skins live in `skins/` inside the application data directory. **Apply to account** sends the PNG to Minecraft Services from Rust (multipart upload, 64 × 64 or 64 × 32 PNGs only); the updated profile replaces the cached session so the new skin survives a restart. Capes owned by the account can be previewed and equipped or removed.
 
 On macOS, `tauri.macos.conf.json` uses an opaque native window with a hidden overlay title bar so macOS clips the rounded corners. System buttons are hidden in `setup` in favor of the launcher's controls. No outer CSS mask or native transparency is required.

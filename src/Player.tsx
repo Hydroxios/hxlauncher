@@ -6,10 +6,10 @@ export type PlayerProfile = {
   id: string;
   name: string;
   skins?: { url: string; variant: string; state: string }[];
-  capes?: { url: string; state: string }[];
+  capes?: { id?: string; url: string; state: string; alias?: string }[];
 };
 
-function accountSkin(profile: PlayerProfile | null) {
+export function accountSkin(profile: PlayerProfile | null) {
   const skins = profile?.skins ?? [];
   // Mojang currently returns ACTIVE/SLIM in uppercase, but keeping this
   // tolerant makes restored profiles work across API versions as well.

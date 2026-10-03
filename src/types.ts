@@ -41,6 +41,6 @@ export type Device = {
   interval: number;
 };
 
-export type Page = "library" | "packs" | "settings" | "activity";
+export type Page = "library" | "packs" | "skins" | "settings" | "activity";
 export type Notice = { text: string; error: boolean };
 export type LogEntry = { time: string; text: string };

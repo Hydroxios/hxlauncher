@@ -100,8 +100,12 @@ pub struct Skin {
 }
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Cape {
+    #[serde(default)]
+    pub id: String,
     pub url: String,
     pub state: String,
+    #[serde(default)]
+    pub alias: String,
 }
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Profile {
@@ -442,6 +446,31 @@ pub async fn refresh(state: &AppState) -> Result<Option<Session>> {
     credentials.session = Some(session.clone());
     credentials.save(&client)?;
     Ok(Some(session))
+}
+/// Keep the in-memory and keychain sessions in sync after a skin or cape
+/// change, so a restart does not bring back the previous textures.
+pub fn replace_profile(state: &AppState, profile: Profile) -> Result<()> {
+    let same = |current: &Profile| {
+        serde_json::to_value(current).ok() == serde_json::to_value(&profile).ok()
+    };
+    if let Some(session) = state.session.lock().map_err(err)?.as_mut() {
+        if same(&session.profile) {
+            return Ok(());
+        }
+        session.profile = profile.clone();
+    }
+    let client = crate::microsoft_client_id();
+    if client.is_empty() {
+        return Ok(());
+    }
+    if let Some(value) = read_credentials(&client)? {
+        let mut credentials = Credentials::decode(value);
+        if let Some(session) = credentials.session.as_mut() {
+            session.profile = profile;
+            credentials.save(&client)?;
+        }
+    }
+    Ok(())
 }
 #[tauri::command]
 pub async fn restore_session(state: tauri::State<'_, AppState>) -> Result<Option<Profile>> {

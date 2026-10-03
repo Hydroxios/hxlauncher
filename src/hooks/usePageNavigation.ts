@@ -7,7 +7,7 @@ type NavigationState = {
   animated: boolean;
 };
 
-const pageOrder: Page[] = ["library", "packs", "settings", "activity"];
+const pageOrder: Page[] = ["library", "packs", "skins", "settings", "activity"];
 
 export function usePageNavigation(initialPage: Page = "library") {
   const [navigation, setNavigation] = useState<NavigationState>({

@@ -5,6 +5,7 @@ mod minecraft;
 mod modded;
 mod packs;
 mod runtime;
+mod skins;
 mod storage;
 pub fn microsoft_client_id() -> String {
     std::env::var("MICROSOFT_CLIENT_ID")
@@ -329,7 +330,15 @@ pub fn run() {
             loaders::list_loader_versions,
             minecraft::launch_instance,
             packs::inspect_modpack,
-            packs::install_modpack
+            packs::install_modpack,
+            skins::reload_profile,
+            skins::upload_skin,
+            skins::set_cape,
+            skins::read_skin_file,
+            skins::export_skin,
+            skins::list_skins,
+            skins::save_skin,
+            skins::delete_skin
         ])
         .run(tauri::generate_context!())
         .expect("Unable to run HX Launcher");
